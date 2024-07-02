@@ -4,16 +4,17 @@
 #include <vector>
 
 #include <wx/gdicmn.h>
+#include <slic3r/GUI/Widgets/Button.hpp>
 
 #include "GUI_Utils.hpp"
 #include "wxExtensions.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include <wx/srchctrl.h>
 
 class wxListBox;
 class wxTextCtrl;
 class ScalableButton;
-class wxStaticText;
 
 namespace Slic3r {
 
@@ -27,11 +28,12 @@ class ParamsViewCtrl;
 
 class EditGCodeDialog : public DPIDialog
 {
-    ParamsViewCtrl*     m_params_list   {nullptr};
-    ScalableButton*     m_add_btn       {nullptr};
-    wxTextCtrl*         m_gcode_editor  {nullptr};
-    wxStaticText*       m_param_label   {nullptr};
-    wxStaticText*       m_param_description {nullptr};
+    ParamsViewCtrl*   m_params_list   {nullptr};
+    ScalableButton*   m_add_btn       {nullptr};
+    wxTextCtrl*       m_gcode_editor  {nullptr};
+    wxStaticText*     m_param_label   {nullptr};
+    wxStaticText*     m_param_description {nullptr};
+    wxSearchCtrl*     m_search_bar   {nullptr};
 
     ReadOnlySlicingStatesConfigDef  cgp_ro_slicing_states_config_def;
     ReadWriteSlicingStatesConfigDef cgp_rw_slicing_states_config_def;
@@ -39,6 +41,7 @@ class EditGCodeDialog : public DPIDialog
     PrintStatisticsConfigDef        cgp_print_statistics_config_def;
     ObjectsInfoConfigDef            cgp_objects_info_config_def;
     DimensionsConfigDef             cgp_dimensions_config_def;
+    TemperaturesConfigDef           cgp_temperatures_config_def;
     TimestampsConfigDef             cgp_timestamps_config_def;
     OtherPresetsConfigDef           cgp_other_presets_config_def;
 
@@ -47,6 +50,7 @@ public:
     ~EditGCodeDialog();
 
     std::string get_edited_gcode() const;
+    void        on_search_update();
 
     void init_params_list(const std::string& custom_gcode_name);
     wxDataViewItem add_presets_placeholders();
@@ -55,10 +59,14 @@ public:
     void bind_list_and_button();
 
 protected:
+    std::unordered_map<int, Button *> m_button_list;
+
     void on_dpi_changed(const wxRect& suggested_rect) override;
     void on_sys_color_changed() override;
 
     void selection_changed(wxDataViewEvent& evt);
+
+    wxBoxSizer* create_btn_sizer(long flags);
 };
 
 
@@ -88,6 +96,7 @@ class ParamsNode
 {
     ParamsNode*         m_parent{ nullptr };
     ParamsNodePtrArray  m_children;
+    wxDataViewCtrl*     m_ctrl;
 
     ParamType           m_param_type{ ParamType::Undef };
 
@@ -101,6 +110,12 @@ class ParamsNode
     // AND the classical node was removed (a new node temporary without children
     // would be added to the control)
     bool                m_container{ true };
+    bool                m_expanded_before_search{false};
+    bool                m_enabled{true};
+
+    bool                 m_bold{false};
+    // first is pos, second is length
+    std::unique_ptr<std::pair<int, int>> m_highlight_index{nullptr};
 
 public:
 
@@ -114,25 +129,38 @@ public:
     wxString    text;
 
     // Group params(root) node
-    ParamsNode(const wxString& group_name, const std::string& icon_name);
+    ParamsNode(const wxString& group_name, const std::string& icon_name, wxDataViewCtrl* ctrl);
 
     // sub SlicingState node
     ParamsNode(ParamsNode*          parent,
                const wxString&      sub_group_name,
-               const std::string&   icon_name);
+               const std::string&   icon_name,
+               wxDataViewCtrl* ctrl);
 
     // parametre node
     ParamsNode( ParamsNode*         parent, 
                 ParamType           param_type,
-                const std::string&  param_key);
+                const std::string&  param_key,
+                wxDataViewCtrl* ctrl);
+
+    wxString GetFormattedText();
 
     bool             IsContainer()      const { return m_container; }
     bool             IsGroupNode()      const { return m_parent == nullptr; }
     bool             IsParamNode()      const { return m_param_type != ParamType::Undef; }
     void             SetContainer(bool is_container) { m_container = is_container; }
 
+    bool IsEnabled() { return m_enabled; }
+    void Enable(bool enable = true) { m_enabled = enable; }
+    void Disable() { Enable(false); }
+
+    void StartSearch();
+    void RefreshSearch(const wxString& search_text);
+    void FinishSearch();
+
     ParamsNode* GetParent() { return m_parent; }
     ParamsNodePtrArray& GetChildren() { return m_children; }
+    wxDataViewItemArray GetEnabledChildren();
 
     void Append(std::unique_ptr<ParamsNode> child) { m_children.emplace_back(std::move(child)); }
 };
@@ -144,8 +172,9 @@ public:
 
 class ParamsModel : public wxDataViewModel
 {
-    ParamsNodePtrArray  m_group_nodes;
-    wxDataViewCtrl*     m_ctrl{ nullptr };
+    ParamsNodePtrArray m_group_nodes;
+    wxDataViewCtrl*    m_ctrl{ nullptr };
+    bool               m_currently_searching{false};
 
 public:
 
@@ -169,11 +198,17 @@ public:
 
     wxString        GetParamName(wxDataViewItem item);
     std::string     GetParamKey(wxDataViewItem item);
+    std::string     GetTopLevelCategory(wxDataViewItem item);
+
+    void RefreshSearch(const wxString& search_text);
+    void FinishSearch();
 
     void            Clear();
 
     wxDataViewItem  GetParent(const wxDataViewItem& item) const override;
     unsigned int    GetChildren(const wxDataViewItem& parent, wxDataViewItemArray& array) const override;
+    unsigned int    GetColumnCount() const override;
+    wxString        GetColumnType(unsigned int col) const override;
 
     void GetValue(wxVariant& variant, const wxDataViewItem& item, unsigned int col) const override;
     bool SetValue(const wxVariant& variant, const wxDataViewItem& item, unsigned int col) override;
@@ -218,6 +253,7 @@ public:
     wxString        GetValue(wxDataViewItem item);
     wxString        GetSelectedValue();
     std::string     GetSelectedParamKey();
+    std::string     GetSelectedTopLevelCategory();
 
     void    CheckAndDeleteIfEmpty(wxDataViewItem item);
 
@@ -226,7 +262,6 @@ public:
 
     void    set_em_unit(int em) { m_em_unit = em; }
 };
-
 
 } // namespace GUI
 } // namespace Slic3r

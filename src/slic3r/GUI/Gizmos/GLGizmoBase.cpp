@@ -8,17 +8,70 @@
 #include <GL/glew.h>
 
 #include "slic3r/GUI/GUI_App.hpp"
-#include "slic3r/GUI/GUI_ObjectManipulation.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/GUI_Colors.hpp"
 
 // TODO: Display tooltips quicker on Linux
 
 namespace Slic3r {
 namespace GUI {
 
+float GLGizmoBase::INV_ZOOM = 1.0f;
+
+
 const float GLGizmoBase::Grabber::SizeFactor = 0.05f;
-const float GLGizmoBase::Grabber::MinHalfSize = 1.5f;
+const float GLGizmoBase::Grabber::MinHalfSize = 4.0f;
 const float GLGizmoBase::Grabber::DraggingScaleFactor = 1.25f;
+const float GLGizmoBase::Grabber::FixedGrabberSize = 16.0f;
+const float GLGizmoBase::Grabber::FixedRadiusSize = 80.0f;
+
+
+ColorRGBA GLGizmoBase::DEFAULT_BASE_COLOR = { 0.625f, 0.625f, 0.625f, 1.0f };
+ColorRGBA GLGizmoBase::DEFAULT_DRAG_COLOR = { 1.0f, 1.0f, 1.0f, 1.0f };
+ColorRGBA GLGizmoBase::DEFAULT_HIGHLIGHT_COLOR = {1.0f, 0.38f, 0.0f, 1.0f};
+std::array<ColorRGBA, 3> GLGizmoBase::AXES_HOVER_COLOR = {{
+                                                                { 0.7f, 0.0f, 0.0f, 1.0f },
+                                                                { 0.0f, 0.7f, 0.0f, 1.0f },
+                                                                { 0.0f, 0.0f, 0.7f, 1.0f }
+                                                                }};
+
+std::array<ColorRGBA, 3> GLGizmoBase::AXES_COLOR = {{
+                                                                { 1.0, 0.0f, 0.0f, 1.0f },
+                                                                { 0.0f, 1.0f, 0.0f, 1.0f },
+                                                                { 0.0f, 0.0f, 1.0f, 1.0f }
+                                                                }};
+
+ColorRGBA            GLGizmoBase::CONSTRAINED_COLOR   = {0.5f, 0.5f, 0.5f, 1.0f};
+ColorRGBA            GLGizmoBase::FLATTEN_COLOR       = {0.96f, 0.93f, 0.93f, 0.5f};
+ColorRGBA            GLGizmoBase::FLATTEN_HOVER_COLOR = {1.0f, 1.0f, 1.0f, 0.75f};
+
+// new style color
+ColorRGBA            GLGizmoBase::GRABBER_NORMAL_COL        = {1.0f, 1.0f, 1.0f, 1.0f};
+ColorRGBA            GLGizmoBase::GRABBER_HOVER_COL         = {0.863f, 0.125f, 0.063f, 1.0f};
+ColorRGBA            GLGizmoBase::GRABBER_UNIFORM_COL       = {0, 1.0, 1.0, 1.0f};
+ColorRGBA            GLGizmoBase::GRABBER_UNIFORM_HOVER_COL = {0, 0.7, 0.7, 1.0f};
+
+
+void GLGizmoBase::update_render_colors()
+{
+    GLGizmoBase::AXES_COLOR = { {
+                                ImGuiWrapper::from_ImVec4(RenderColor::colors[RenderCol_Grabber_X]),
+                                ImGuiWrapper::from_ImVec4(RenderColor::colors[RenderCol_Grabber_Y]),
+                                ImGuiWrapper::from_ImVec4(RenderColor::colors[RenderCol_Grabber_Z])
+                                } };
+
+    GLGizmoBase::FLATTEN_COLOR       = ImGuiWrapper::from_ImVec4(RenderColor::colors[RenderCol_Flatten_Plane]);
+    GLGizmoBase::FLATTEN_HOVER_COLOR = ImGuiWrapper::from_ImVec4(RenderColor::colors[RenderCol_Flatten_Plane_Hover]);
+}
+
+void GLGizmoBase::load_render_colors()
+{
+    RenderColor::colors[RenderCol_Grabber_X]           = ImGuiWrapper::to_ImVec4(GLGizmoBase::AXES_COLOR[0]);
+    RenderColor::colors[RenderCol_Grabber_Y]           = ImGuiWrapper::to_ImVec4(GLGizmoBase::AXES_COLOR[1]);
+    RenderColor::colors[RenderCol_Grabber_Z]           = ImGuiWrapper::to_ImVec4(GLGizmoBase::AXES_COLOR[2]);
+    RenderColor::colors[RenderCol_Flatten_Plane]       = ImGuiWrapper::to_ImVec4(GLGizmoBase::FLATTEN_COLOR);
+    RenderColor::colors[RenderCol_Flatten_Plane_Hover] = ImGuiWrapper::to_ImVec4(GLGizmoBase::FLATTEN_HOVER_COLOR);
+}
 
 PickingModel GLGizmoBase::Grabber::s_cube;
 PickingModel GLGizmoBase::Grabber::s_cone;
@@ -40,6 +93,19 @@ float GLGizmoBase::Grabber::get_half_size(float size) const
 float GLGizmoBase::Grabber::get_dragging_half_size(float size) const
 {
     return get_half_size(size) * DraggingScaleFactor;
+}
+
+PickingModel &GLGizmoBase::Grabber::get_cube()
+{
+    if (!s_cube.model.is_initialized()) {
+        // This cannot be done in constructor, OpenGL is not yet
+        // initialized at that point (on Linux at least).
+        indexed_triangle_set its = its_make_cube(1.0, 1.0, 1.0);
+        its_translate(its, -0.5f * Vec3f::Ones());
+        s_cube.model.init_from(its);
+        s_cube.mesh_raycaster = std::make_unique<MeshRaycaster>(std::make_shared<const TriangleMesh>(std::move(its)));
+    }
+    return s_cube;
 }
 
 void GLGizmoBase::Grabber::register_raycasters_for_picking(int id)
@@ -71,12 +137,14 @@ void GLGizmoBase::Grabber::render(float size, const ColorRGBA& render_color)
     }
 
     if (!s_cone.model.is_initialized()) {
-        indexed_triangle_set its = its_make_cone(0.375, 1.5, double(PI) / 18.0);
+        indexed_triangle_set its = its_make_cone(1.0, 1.0, double(PI) / 18.0);
         s_cone.model.init_from(its);
         s_cone.mesh_raycaster = std::make_unique<MeshRaycaster>(std::make_shared<const TriangleMesh>(std::move(its)));
     }
 
-    const float half_size = dragging ? get_dragging_half_size(size) : get_half_size(size);
+    //BBS set to fixed size grabber
+    const float  grabber_size   = FixedGrabberSize * INV_ZOOM;
+    const double extension_size = 0.75 * FixedGrabberSize * INV_ZOOM;
 
     s_cube.model.set_color(render_color);
     s_cone.model.set_color(render_color);
@@ -85,68 +153,47 @@ void GLGizmoBase::Grabber::render(float size, const ColorRGBA& render_color)
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
     const Transform3d& view_matrix = camera.get_view_matrix();
     const Matrix3d view_matrix_no_offset = view_matrix.matrix().block(0, 0, 3, 3);
-    std::vector<Transform3d> elements_matrices(GRABBER_ELEMENTS_MAX_COUNT, Transform3d::Identity());
-    elements_matrices[0] = matrix * Geometry::translation_transform(center) * Geometry::rotation_transform(angles) * Geometry::scale_transform(2.0 * half_size);
-    Transform3d view_model_matrix = view_matrix * elements_matrices[0];
 
-    shader->set_uniform("view_model_matrix", view_model_matrix);
-    Matrix3d view_normal_matrix = view_matrix_no_offset * elements_matrices[0].matrix().block(0, 0, 3, 3).inverse().transpose();
-    shader->set_uniform("view_normal_matrix", view_normal_matrix);
-    s_cube.model.render();
-
-    auto render_extension = [&view_matrix, &view_matrix_no_offset, shader](const Transform3d& matrix) {
-        const Transform3d view_model_matrix = view_matrix * matrix;
-        shader->set_uniform("view_model_matrix", view_model_matrix);
-        const Matrix3d view_normal_matrix = view_matrix_no_offset * matrix.matrix().block(0, 0, 3, 3).inverse().transpose();
+    auto render_extension = [&view_matrix, &view_matrix_no_offset, shader, this](int idx, PickingModel &model, const Transform3d &model_matrix) {
+        shader->set_uniform("view_model_matrix", view_matrix * model_matrix);
+        const Matrix3d view_normal_matrix = view_matrix_no_offset * model_matrix.matrix().block(0, 0, 3, 3).inverse().transpose();
         shader->set_uniform("view_normal_matrix", view_normal_matrix);
-        s_cone.model.render();
+        model.model.render();
+
+        if (raycasters[idx] == nullptr) {
+            GLCanvas3D &canvas = *wxGetApp().plater()->canvas3D();
+            raycasters[idx] = canvas.add_raycaster_for_picking(SceneRaycaster::EType::Gizmo, picking_id, *model.mesh_raycaster, model_matrix);
+        } else {
+            raycasters[idx]->set_transform(model_matrix);
+        }
     };
 
-    if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::PosX)) != 0) {
-        elements_matrices[1] = elements_matrices[0] * Geometry::translation_transform(Vec3d::UnitX()) * Geometry::rotation_transform({ 0.0, 0.5 * double(PI), 0.0 });
-        render_extension(elements_matrices[1]);
-    }
-    if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::NegX)) != 0) {
-        elements_matrices[2] = elements_matrices[0] * Geometry::translation_transform(-Vec3d::UnitX()) * Geometry::rotation_transform({ 0.0, -0.5 * double(PI), 0.0 });
-        render_extension(elements_matrices[2]);
-    }
-    if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::PosY)) != 0) {
-        elements_matrices[3] = elements_matrices[0] * Geometry::translation_transform(Vec3d::UnitY()) * Geometry::rotation_transform({ -0.5 * double(PI), 0.0, 0.0 });
-        render_extension(elements_matrices[3]);
-    }
-    if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::NegY)) != 0) {
-        elements_matrices[4] = elements_matrices[0] * Geometry::translation_transform(-Vec3d::UnitY()) * Geometry::rotation_transform({ 0.5 * double(PI), 0.0, 0.0 });
-        render_extension(elements_matrices[4]);
-    }
-    if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::PosZ)) != 0) {
-        elements_matrices[5] = elements_matrices[0] * Geometry::translation_transform(Vec3d::UnitZ());
-        render_extension(elements_matrices[5]);
-    }
-    if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::NegZ)) != 0) {
-        elements_matrices[6] = elements_matrices[0] * Geometry::translation_transform(-Vec3d::UnitZ()) * Geometry::rotation_transform({ double(PI), 0.0, 0.0 });
-        render_extension(elements_matrices[6]);
-    }
-
-    if (raycasters[0] == nullptr) {
-        GLCanvas3D& canvas = *wxGetApp().plater()->canvas3D();
-        raycasters[0] = canvas.add_raycaster_for_picking(SceneRaycaster::EType::Gizmo, picking_id, *s_cube.mesh_raycaster, elements_matrices[0]);
-        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::PosX)) != 0)
-            raycasters[1] = canvas.add_raycaster_for_picking(SceneRaycaster::EType::Gizmo, picking_id, *s_cone.mesh_raycaster, elements_matrices[1]);
-        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::NegX)) != 0)
-            raycasters[2] = canvas.add_raycaster_for_picking(SceneRaycaster::EType::Gizmo, picking_id, *s_cone.mesh_raycaster, elements_matrices[2]);
-        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::PosY)) != 0)
-            raycasters[3] = canvas.add_raycaster_for_picking(SceneRaycaster::EType::Gizmo, picking_id, *s_cone.mesh_raycaster, elements_matrices[3]);
-        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::NegY)) != 0)
-            raycasters[4] = canvas.add_raycaster_for_picking(SceneRaycaster::EType::Gizmo, picking_id, *s_cone.mesh_raycaster, elements_matrices[4]);
-        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::PosZ)) != 0)
-            raycasters[5] = canvas.add_raycaster_for_picking(SceneRaycaster::EType::Gizmo, picking_id, *s_cone.mesh_raycaster, elements_matrices[5]);
-        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::NegZ)) != 0)
-            raycasters[6] = canvas.add_raycaster_for_picking(SceneRaycaster::EType::Gizmo, picking_id, *s_cone.mesh_raycaster, elements_matrices[6]);
-    }
-    else {
-        for (size_t i = 0; i < GRABBER_ELEMENTS_MAX_COUNT; ++i) {
-            if (raycasters[i] != nullptr)
-                raycasters[i]->set_transform(elements_matrices[i]);
+    if (extensions == EGrabberExtension::PosZ) {
+        const Transform3d model_matrix = matrix * Geometry::assemble_transform(center, angles, Vec3d(0.75 * extension_size, 0.75 * extension_size, 2.0 * extension_size));
+        render_extension(0, s_cone, model_matrix);
+    } else {
+        const Transform3d model_matrix = matrix * Geometry::assemble_transform(center, angles, grabber_size * Vec3d::Ones());
+        render_extension(0, s_cube, model_matrix);
+        
+        const Transform3d extension_model_matrix_base = matrix * Geometry::assemble_transform(center, angles);
+        const Vec3d extension_scale(0.75 * extension_size, 0.75 * extension_size, 3.0 * extension_size);
+        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::PosX)) != 0) {
+            render_extension(1, s_cone, extension_model_matrix_base * Geometry::assemble_transform(2.0 * extension_size * Vec3d::UnitX(), Vec3d(0.0, 0.5 * double(PI), 0.0), extension_scale));
+        }
+        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::NegX)) != 0) {
+            render_extension(2, s_cone, extension_model_matrix_base * Geometry::assemble_transform(-2.0 * extension_size * Vec3d::UnitX(), Vec3d(0.0, -0.5 * double(PI), 0.0), extension_scale));
+        }
+        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::PosY)) != 0) {
+            render_extension(3, s_cone, extension_model_matrix_base * Geometry::assemble_transform(2.0 * extension_size * Vec3d::UnitY(), Vec3d(-0.5 * double(PI), 0.0, 0.0), extension_scale));
+        }
+        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::NegY)) != 0) {
+            render_extension(4, s_cone, extension_model_matrix_base * Geometry::assemble_transform(-2.0 * extension_size * Vec3d::UnitY(), Vec3d(0.5 * double(PI), 0.0, 0.0), extension_scale));
+        }
+        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::PosZ)) != 0) {
+            render_extension(5, s_cone, extension_model_matrix_base * Geometry::assemble_transform(2.0 * extension_size * Vec3d::UnitZ(), Vec3d::Zero(), extension_scale));
+        }
+        if ((int(extensions) & int(GLGizmoBase::EGrabberExtension::NegZ)) != 0) {
+            render_extension(6, s_cone, extension_model_matrix_base * Geometry::assemble_transform(-2.0 * extension_size * Vec3d::UnitZ(), Vec3d(double(PI), 0.0, 0.0), extension_scale));
         }
     }
 }
@@ -166,6 +213,10 @@ GLGizmoBase::GLGizmoBase(GLCanvas3D& parent, const std::string& icon_filename, u
 std::string GLGizmoBase::get_action_snapshot_name() const
 {
     return "Gizmo action";
+}
+
+void GLGizmoBase::set_icon_filename(const std::string &filename) {
+    m_icon_filename = filename;
 }
 
 void GLGizmoBase::set_hover_id(int id)
@@ -188,6 +239,37 @@ bool GLGizmoBase::update_items_state()
     return res;
 }
 
+bool GLGizmoBase::GizmoImguiBegin(const std::string &name, int flags)
+{
+    return m_imgui->begin(name, flags);
+}
+
+void GLGizmoBase::GizmoImguiEnd()
+{
+    last_input_window_width = ImGui::GetWindowWidth();
+    m_imgui->end();
+}
+
+void GLGizmoBase::GizmoImguiSetNextWIndowPos(float &x, float y, int flag, float pivot_x, float pivot_y)
+{
+    GizmoImguiSetNextWIndowPos(x, y, last_input_window_width, 0, flag, pivot_x, pivot_y);
+}
+
+void GLGizmoBase::GizmoImguiSetNextWIndowPos(float &x, float y, float w, float h, int flag, float pivot_x, float pivot_y)
+{
+    if (abs(w) > 0.01f) {
+        if (x + w > m_parent.get_canvas_size().get_width()) {
+            if (w > m_parent.get_canvas_size().get_width()) {
+                x = 0;
+            } else {
+                x = m_parent.get_canvas_size().get_width() - w;
+            }
+        }
+    }
+
+    m_imgui->set_next_window_pos(x, y, flag, pivot_x, pivot_y);
+}
+
 void GLGizmoBase::register_grabbers_for_picking()
 {
     for (size_t i = 0; i < m_grabbers.size(); ++i) {
@@ -204,7 +286,11 @@ void GLGizmoBase::unregister_grabbers_for_picking()
 
 void GLGizmoBase::render_grabbers(const BoundingBoxf3& box) const
 {
+#if ENABLE_FIXED_GRABBER
+    render_grabbers((float)(GLGizmoBase::Grabber::FixedGrabberSize));
+#else
     render_grabbers((float)((box.size().x() + box.size().y() + box.size().z()) / 3.0));
+#endif
 }
 
 void GLGizmoBase::render_grabbers(float size) const
@@ -314,8 +400,6 @@ void GLGizmoBase::set_dirty() {
     m_dirty = true;
 }
 
-
-
 void GLGizmoBase::render_input_window(float x, float y, float bottom_limit)
 {
     on_render_input_window(x, y, bottom_limit);
@@ -334,16 +418,12 @@ void GLGizmoBase::render_input_window(float x, float y, float bottom_limit)
 
 std::string GLGizmoBase::get_name(bool include_shortcut) const
 {
-    std::string out = on_get_name();
-    if (!include_shortcut) return out;
-
     int key = get_shortcut_key();
-    assert(key==NO_SHORTCUT_KEY_VALUE || (key >= WXK_CONTROL_A && key <= WXK_CONTROL_Z));
-    out += std::string(" [") + char(int('A') + key - int(WXK_CONTROL_A)) + "]";
+    std::string out = on_get_name();
+    if (include_shortcut && key >= WXK_CONTROL_A && key <= WXK_CONTROL_Z)
+        out += std::string(" [") + char(int('A') + key - int(WXK_CONTROL_A)) + "]";
     return out;
 }
 
-
 } // namespace GUI
 } // namespace Slic3r
-

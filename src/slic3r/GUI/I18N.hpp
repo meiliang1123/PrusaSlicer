@@ -1,10 +1,9 @@
-///|/ Copyright (c) Prusa Research 2018 - 2023 Oleksandra Iushchenko @YuSanka, Vojtěch Bubník @bubnikv, Vojtěch Král @vojtechkral
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef _
 #define _(s)    	Slic3r::GUI::I18N::translate((s))
 #define _L(s)    	Slic3r::GUI::I18N::translate((s))
+#define _devL(s)	wxString((s))
+#define _omitL(s)   ("")
+#define _utf8(s)    Slic3r::GUI::I18N::translate_utf8((s))
 #define _u8L(s)     Slic3r::GUI::I18N::translate_utf8((s))
 #endif /* _ */
 
@@ -25,6 +24,12 @@
 #ifndef L_CONTEXT
 #define L_CONTEXT(s, context) s
 #endif /* L */
+
+#ifndef _CHB
+//! macro used to localization, return wxScopedCharBuffer
+//! With wxConvUTF8 explicitly specify that the source string is already in UTF-8 encoding
+#define _CHB(s) wxGetTranslation(wxString(s, wxConvUTF8)).utf8_str()
+#endif /* _CHB */
 
 #ifndef slic3r_GUI_I18N_hpp_
 #define slic3r_GUI_I18N_hpp_

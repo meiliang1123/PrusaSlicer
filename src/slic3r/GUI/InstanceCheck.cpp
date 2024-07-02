@@ -1,10 +1,7 @@
-///|/ Copyright (c) Prusa Research 2020 - 2023 David Kocík @kocikdav, Lukáš Matěna @lukasmatena, Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "GUI_App.hpp"
 #include "InstanceCheck.hpp"
 #include "Plater.hpp"
+#include <boost/regex.hpp>
 
 #ifdef _WIN32
   #include "MainFrame.hpp"
@@ -90,7 +87,7 @@ namespace instance_check_internal
 
 #ifdef _WIN32
 
-	static HWND l_prusa_slicer_hwnd;
+	static HWND l_bambu_studio_hwnd;
 	static BOOL CALLBACK EnumWindowsProc(_In_ HWND   hwnd, _In_ LPARAM lParam)
 	{
 		//checks for other instances of prusaslicer, if found brings it to front and return false to stop enumeration and quit this instance
@@ -108,7 +105,7 @@ namespace instance_check_internal
 			return true;
 		std::wstring classNameString(className);
 		std::wstring wndTextString(wndText);
-		if (wndTextString.find(L"PrusaSlicer") != std::wstring::npos && classNameString == L"wxWindowNR") {
+		if (wndTextString.find(L"OrcaSlicer") != std::wstring::npos && classNameString == L"wxWindowNR") {
 			//check if other instances has same instance hash
 			//if not it is not same version(binary) as this version 
 			HANDLE   handle = GetProp(hwnd, L"Instance_Hash_Minor");
@@ -119,14 +116,11 @@ namespace instance_check_internal
 			other_instance_hash_major = PtrToUint(handle);
 			other_instance_hash_major = other_instance_hash_major << 32;
 			other_instance_hash += other_instance_hash_major;
-			handle = GetProp(hwnd, L"Instance_Is_Maximized");
-			const bool maximized = PtrToUint(handle) == 1;
-
 			if(my_instance_hash == other_instance_hash)
 			{
 				BOOST_LOG_TRIVIAL(debug) << "win enum - found correct instance";
-				l_prusa_slicer_hwnd = hwnd;
-				ShowWindow(hwnd, maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
+				l_bambu_studio_hwnd = hwnd;
+				ShowWindow(hwnd, SW_SHOWMAXIMIZED);
 				SetForegroundWindow(hwnd);
 				return false;
 			}
@@ -151,7 +145,7 @@ namespace instance_check_internal
 			data_to_send.dwData = 1;
 			data_to_send.cbData = sizeof(TCHAR) * (wcslen(*command_line_args.get()) + 1);
 			data_to_send.lpData = *command_line_args.get();
-			SendMessage(l_prusa_slicer_hwnd, WM_COPYDATA, 0, (LPARAM)&data_to_send);
+			SendMessage(l_bambu_studio_hwnd, WM_COPYDATA, 0, (LPARAM)&data_to_send);
 			return true;  
 		}
 	    return false;
@@ -206,10 +200,7 @@ namespace instance_check_internal
 	  		//else
 	    	//	BOOST_LOG_TRIVIAL(error) << "success delete lockfile " << path;
 #ifdef __APPLE__
-			// Partial fix of #7583
-			// On price of incorrect working of single instances on older OSX
-			if (wxPlatformInfo::Get().GetOSMajorVersion() > 12)
-	   			send_message_mac_closing(GUI::wxGetApp().get_instance_hash_string(),GUI::wxGetApp().get_instance_hash_string());
+	   		send_message_mac_closing(GUI::wxGetApp().get_instance_hash_string(),GUI::wxGetApp().get_instance_hash_string());
 #endif	    
 		}
 	}
@@ -246,10 +237,10 @@ namespace instance_check_internal
 			dbus_uint32_t 	serial = 0;
 			const char* sigval = message_text.c_str();
 			//std::string		interface_name = "com.prusa3d.prusaslicer.InstanceCheck";
-			std::string		interface_name = "com.prusa3d.prusaslicer.InstanceCheck.Object" + version;
+			std::string		interface_name = "com.softfever3d.orca-slicer.InstanceCheck.Object" + version;
 			std::string   	method_name = "AnotherInstance";
 			//std::string		object_name = "/com/prusa3d/prusaslicer/InstanceCheck";
-			std::string		object_name = "/com/prusa3d/prusaslicer/InstanceCheck/Object" + version;
+			std::string		object_name = "/com/softfever3d/OrcaSlicer/InstanceCheck/Object" + version;
 
 
 			// initialise the error value
@@ -381,7 +372,6 @@ namespace GUI {
 
 wxDEFINE_EVENT(EVT_LOAD_MODEL_OTHER_INSTANCE, LoadFromOtherInstanceEvent);
 wxDEFINE_EVENT(EVT_START_DOWNLOAD_OTHER_INSTANCE, StartDownloadOtherInstanceEvent);
-wxDEFINE_EVENT(EVT_LOGIN_OTHER_INSTANCE, LoginOtherInstanceEvent);
 wxDEFINE_EVENT(EVT_INSTANCE_GO_TO_FRONT, InstanceGoToFrontEvent);
 
 void OtherInstanceMessageHandler::init(wxEvtHandler* callback_evt_handler)
@@ -414,7 +404,6 @@ void OtherInstanceMessageHandler::shutdown(MainFrame* main_frame)
 		HWND hwnd = main_frame->GetHandle();
 		RemoveProp(hwnd, L"Instance_Hash_Minor");
 		RemoveProp(hwnd, L"Instance_Hash_Major");
-		RemoveProp(hwnd, L"Instance_Is_Maximized");
 #endif //_WIN32
 #if __APPLE__
 		//delete macos implementation
@@ -444,28 +433,12 @@ void OtherInstanceMessageHandler::init_windows_properties(MainFrame* main_frame,
 {
 	size_t       minor_hash = instance_hash & 0xFFFFFFFF;
 	size_t       major_hash = (instance_hash & 0xFFFFFFFF00000000) >> 32;
-	size_t       is_maximized = main_frame->IsMaximized() ? 1 : 0;
 	HWND         hwnd = main_frame->GetHandle();
 	HANDLE       handle_minor = UIntToPtr(minor_hash);
 	HANDLE       handle_major = UIntToPtr(major_hash);
-	HANDLE       handle_is_maximized = UIntToPtr(is_maximized);
 	SetProp(hwnd, L"Instance_Hash_Minor", handle_minor);
 	SetProp(hwnd, L"Instance_Hash_Major", handle_major);
-	SetProp(hwnd, L"Instance_Is_Maximized", handle_is_maximized);
 	//BOOST_LOG_TRIVIAL(debug) << "window properties initialized " << instance_hash << " (" << minor_hash << " & "<< major_hash;
-}
-
-void OtherInstanceMessageHandler::update_windows_properties(MainFrame* main_frame)
-{
-	if (m_initialized) {
-		// dlete old value of "Instance_Is_Maximized" property
-		HWND hwnd = main_frame->GetHandle();
-		RemoveProp(hwnd, L"Instance_Is_Maximized");
-		// set new value for "Instance_Is_Maximized" property
-		size_t	is_maximized		= main_frame->IsMaximized() ? 1 : 0;
-		HANDLE	handle_is_maximized	= UIntToPtr(is_maximized);
-		SetProp(hwnd, L"Instance_Is_Maximized", handle_is_maximized);
-	}
 }
 
 #if 0
@@ -528,22 +501,17 @@ void OtherInstanceMessageHandler::handle_message(const std::string& message)
 
 	std::vector<boost::filesystem::path> paths;
 	std::vector<std::string> downloads;
+	boost::regex re(R"(^(orcaslicer|prusaslicer|cura|bambustudio):\/\/open[\/]?\?file=)", boost::regbase::icase);
+	boost::smatch results;
+
 	// Skip the first argument, it is the path to the slicer executable.
 	auto it = args.begin();
 	for (++ it; it != args.end(); ++ it) {
 		boost::filesystem::path p = MessageHandlerInternal::get_path(*it);
 		if (! p.string().empty())
 			paths.emplace_back(p);
-// TODO: There is a misterious slash appearing in recieved msg on windows
-#ifdef _WIN32
-		else if (it->rfind("prusaslicer://open/?file=", 0) == 0)
-#else
-	    else if (it->rfind("prusaslicer://open?file=", 0) == 0)
-#endif
+		else if (boost::regex_search(*it, results, re))
 			downloads.emplace_back(*it);
-		else if (it->rfind("prusaslicer://login", 0) == 0) {
-			wxPostEvent(m_callback_evt_handler, LoginOtherInstanceEvent(GUI::EVT_LOGIN_OTHER_INSTANCE, std::string(*it)));
-		}
 	}
 	if (! paths.empty()) {
 		//wxEvtHandler* evt_handler = wxGetApp().plater(); //assert here?
@@ -582,12 +550,9 @@ namespace MessageHandlerDBusInternal
 	        "       <arg name=\"data\" direction=\"out\" type=\"s\" />"
 	        "     </method>"
 	        "   </interface>"
-	        "   <interface name=\"com.prusa3d.prusaslicer.InstanceCheck\">"
+	        "   <interface name=\"com.softfever3d.orca-slicer.InstanceCheck\">"
 	        "     <method name=\"AnotherInstance\">"
 	        "       <arg name=\"data\" direction=\"in\" type=\"s\" />"
-	        "     </method>"
-	        "	  <method name=\"Introspect\">"
-	        "       <arg name=\"data\" direction=\"out\" type=\"s\" />"
 	        "     </method>"
 	        "   </interface>"
 	        " </node>";
@@ -597,8 +562,7 @@ namespace MessageHandlerDBusInternal
 	    dbus_connection_send(connection, reply, NULL);
 	    dbus_message_unref(reply);
 	}
-
-	//method AnotherInstance receives message from another PrusaSlicer instance 
+	//method AnotherInstance receives message from another OrcaSlicer instance 
 	static void handle_method_another_instance(DBusConnection *connection, DBusMessage *request)
 	{
 	    DBusError     err;
@@ -624,16 +588,13 @@ namespace MessageHandlerDBusInternal
 	{
 		const char* interface_name = dbus_message_get_interface(message);
 	    const char* member_name    = dbus_message_get_member(message);
-	    std::string our_interface  = "com.prusa3d.prusaslicer.InstanceCheck.Object" + wxGetApp().get_instance_hash_string();
+	    std::string our_interface  = "com.softfever3d.orca-slicer.InstanceCheck.Object" + wxGetApp().get_instance_hash_string();
 	    BOOST_LOG_TRIVIAL(trace) << "DBus message received: interface: " << interface_name << ", member: " << member_name;
 	    if (0 == strcmp("org.freedesktop.DBus.Introspectable", interface_name) && 0 == strcmp("Introspect", member_name)) {		
 	        respond_to_introspect(connection, message);
 	        return DBUS_HANDLER_RESULT_HANDLED;
 	    } else if (0 == strcmp(our_interface.c_str(), interface_name) && 0 == strcmp("AnotherInstance", member_name)) {
 	        handle_method_another_instance(connection, message);
-	        return DBUS_HANDLER_RESULT_HANDLED;
-	    } else if (0 == strcmp(our_interface.c_str(), interface_name) && 0 == strcmp("Introspect", member_name)) {
-	         respond_to_introspect(connection, message);
 	        return DBUS_HANDLER_RESULT_HANDLED;
 	    } 
 	    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -647,8 +608,8 @@ void OtherInstanceMessageHandler::listen()
     int 				 name_req_val;
     DBusObjectPathVTable vtable;
     std::string 		 instance_hash  = wxGetApp().get_instance_hash_string();
-	std::string			 interface_name = "com.prusa3d.prusaslicer.InstanceCheck.Object" + instance_hash;
-    std::string			 object_name 	= "/com/prusa3d/prusaslicer/InstanceCheck/Object" + instance_hash;
+	std::string			 interface_name = "com.softfever3d.orca-slicer.InstanceCheck.Object" + instance_hash;
+    std::string			 object_name 	= "/com/softfever3d/OrcaSlicer/InstanceCheck/Object" + instance_hash;
 
     //BOOST_LOG_TRIVIAL(debug) << "init dbus listen " << interface_name << " " << object_name;
     dbus_error_init(&err);
@@ -676,7 +637,7 @@ void OtherInstanceMessageHandler::listen()
 	    return;
 	}
 	if (DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER != name_req_val) {
-		BOOST_LOG_TRIVIAL(error) << "Not primary owner of DBus name - probably another PrusaSlicer instance is running.";
+		BOOST_LOG_TRIVIAL(error) << "Not primary owner of DBus name - probably another OrcaSlicer instance is running.";
 	    BOOST_LOG_TRIVIAL(error) << "Dbus Messages listening terminating.";
 	    dbus_connection_unref(conn);
 	    return;

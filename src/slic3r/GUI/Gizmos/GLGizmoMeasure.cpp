@@ -6,7 +6,7 @@
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/Plater.hpp"
-#include "slic3r/GUI/GUI_ObjectManipulation.hpp"
+#include "slic3r/GUI/Gizmos/GizmoObjectManipulation.hpp"
 
 
 #include "libslic3r/PresetBundle.hpp"
@@ -27,7 +27,8 @@ namespace GUI {
 
 static const Slic3r::ColorRGBA SELECTED_1ST_COLOR = { 0.25f, 0.75f, 0.75f, 1.0f };
 static const Slic3r::ColorRGBA SELECTED_2ND_COLOR = { 0.75f, 0.25f, 0.75f, 1.0f };
-static const Slic3r::ColorRGBA NEUTRAL_COLOR      = { 0.5f, 0.5f, 0.5f, 1.0f };
+static const Slic3r::ColorRGBA NEUTRAL_COLOR      = {0.5f, 0.5f, 0.5f, 1.0f};
+static const Slic3r::ColorRGBA HOVER_COLOR        = ColorRGBA::GREEN();
 
 static const int POINT_ID         = 100;
 static const int EDGE_ID          = 200;
@@ -525,6 +526,16 @@ bool GLGizmoMeasure::gizmo_event(SLAGizmoEventType action, const Vec2d& mouse_po
 bool GLGizmoMeasure::on_init()
 {
     m_shortcut_key = WXK_CONTROL_U;
+
+    m_desc["feature_selection_caption"] = _L("ShiftLeft mouse button");
+    m_desc["feature_selection"]         = _L("Select feature");
+    m_desc["point_selection_caption"]   = _L("Shift + Left mouse button");
+    m_desc["point_selection"]           = _L("Select point");
+    m_desc["reset_caption"]             = _L("Delete");
+    m_desc["reset"]                     = _L("Restart selection");
+    m_desc["unselect_caption"]          = _L("Esc");
+    m_desc["unselect"]                  = _L("Unselect");
+
     return true;
 }
 
@@ -776,7 +787,7 @@ void GLGizmoMeasure::on_render()
     };
 
     auto set_emission_uniform = [shader](const ColorRGBA& color, bool hover) {
-        shader->set_uniform("emission_factor", (color == GLVolume::SELECTED_COLOR) ? 0.0f :
+        shader->set_uniform("emission_factor", /*(color == GLVolume::SELECTED_COLOR) ? 0.0f :*/
             hover ? 0.5f : 0.25f);
     };
 
@@ -892,7 +903,7 @@ void GLGizmoMeasure::on_render()
     };
 
     auto hovering_color = [this, hover_selection_color]() {
-        return (m_mode == EMode::PointSelection) ? GLVolume::SELECTED_COLOR : hover_selection_color();
+        return (m_mode == EMode::PointSelection) ? HOVER_COLOR : hover_selection_color();
     };
 
     if (m_curr_feature.has_value()) {
@@ -1168,29 +1179,24 @@ void GLGizmoMeasure::render_dimensioning()
 
         const Transform3d ss_to_ndc_matrix = TransformHelper::ndc_to_ss_matrix_inverse(viewport);
 
-#if !SLIC3R_OPENGL_ES
+#if ENABLE_GL_CORE_PROFILE
         if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
             shader->stop_using();
 
-#if SLIC3R_OPENGL_ES
-            shader = wxGetApp().get_shader("dashed_lines");
-#else
             shader = wxGetApp().get_shader("dashed_thick_lines");
-#endif // SLIC3R_OPENGL_ES
             if (shader == nullptr)
                 return;
 
             shader->start_using();
             shader->set_uniform("projection_matrix", Transform3d::Identity());
+            const std::array<int, 4>& viewport = camera.get_viewport();
             shader->set_uniform("viewport_size", Vec2d(double(viewport[2]), double(viewport[3])));
             shader->set_uniform("width", 1.0f);
             shader->set_uniform("gap_size", 0.0f);
-#if !SLIC3R_OPENGL_ES
         }
         else
+#endif // ENABLE_GL_CORE_PROFILE
             glsafe(::glLineWidth(2.0f));
-#endif // !SLIC3R_OPENGL_ES
 
         // stem
         shader->set_uniform("view_model_matrix", overlap ?
@@ -1199,9 +1205,8 @@ void GLGizmoMeasure::render_dimensioning()
         m_dimensioning.line.set_color(ColorRGBA::WHITE());
         m_dimensioning.line.render();
 
-#if !SLIC3R_OPENGL_ES
+#if ENABLE_GL_CORE_PROFILE
         if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
             shader->stop_using();
 
             shader = wxGetApp().get_shader("flat");
@@ -1209,11 +1214,10 @@ void GLGizmoMeasure::render_dimensioning()
                 return;
 
             shader->start_using();
-#if !SLIC3R_OPENGL_ES
         }
         else
+#endif // ENABLE_GL_CORE_PROFILE
             glsafe(::glLineWidth(1.0f));
-#endif // !SLIC3R_OPENGL_ES
 
         // arrow 1
         shader->set_uniform("view_model_matrix", overlap ?
@@ -1228,21 +1232,22 @@ void GLGizmoMeasure::render_dimensioning()
         m_dimensioning.triangle.render();
 
         const bool use_inches = wxGetApp().app_config->get_bool("use_inches");
-        const double curr_value = use_inches ? ObjectManipulation::mm_to_in * distance : distance;
+        const double curr_value = use_inches ? GizmoObjectManipulation::mm_to_in * distance : distance;
         const std::string curr_value_str = format_double(curr_value);
         const std::string units = use_inches ? _u8L("in") : _u8L("mm");
         const float value_str_width = 20.0f + ImGui::CalcTextSize(curr_value_str.c_str()).x;
         static double edit_value = 0.0;
 
+        ImGuiWrapper::push_common_window_style(m_parent.get_scale());
         const Vec2d label_position = 0.5 * (v1ss + v2ss);
-        ImGuiPureWrap::set_next_window_pos(label_position.x(), viewport[3] - label_position.y(), ImGuiCond_Always, 0.0f, 1.0f);
-        ImGuiPureWrap::set_next_window_bg_alpha(0.0f);
+        m_imgui->set_next_window_pos(label_position.x(), viewport[3] - label_position.y(), ImGuiCond_Always, 0.0f, 1.0f);
+        m_imgui->set_next_window_bg_alpha(0.0f);
 
         if (!m_editing_distance) {
             ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 1.0f, 1.0f });
-            ImGuiPureWrap::begin(std::string("distance"), ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration);
+            m_imgui->begin(std::string("distance"), ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration);
             ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
             ImGui::AlignTextToFramePadding();
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
@@ -1251,16 +1256,16 @@ void GLGizmoMeasure::render_dimensioning()
             ImVec2 txt_size = ImGui::CalcTextSize(txt.c_str());
             const ImGuiStyle& style = ImGui::GetStyle();
             draw_list->AddRectFilled({ pos.x - style.FramePadding.x, pos.y + style.FramePadding.y }, { pos.x + txt_size.x + 2.0f * style.FramePadding.x , pos.y + txt_size.y + 2.0f * style.FramePadding.y },
-              ImGuiPSWrap::to_ImU32(ColorRGBA(0.5f, 0.5f, 0.5f, 0.5f)));
+              ImGuiWrapper::to_ImU32(ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f)));
             ImGui::SetCursorScreenPos({ pos.x + style.FramePadding.x, pos.y });
-            ImGuiPureWrap::text(txt);
+            m_imgui->text(txt);
             ImGui::SameLine();
-            if (m_imgui->image_button(ImGui::SliderFloatEditBtnIcon, _u8L("Edit to scale"))) {
+            if (m_imgui->image_button(ImGui::SliderFloatEditBtnIcon, _L("Edit to scale"))) {
                 m_editing_distance = true;
                 edit_value = curr_value;
                 m_imgui->requires_extra_frame();
             }
-            ImGuiPureWrap::end();
+            m_imgui->end();
             ImGui::PopStyleVar(3);
         }
 
@@ -1277,7 +1282,7 @@ void GLGizmoMeasure::render_dimensioning()
                     return;
 
                 const double ratio = new_value / old_value;
-                wxGetApp().plater()->take_snapshot(_L("Scale"));
+                wxGetApp().plater()->take_snapshot(_u8L("Scale"));
 
                 struct TrafoData
                 {
@@ -1362,7 +1367,7 @@ void GLGizmoMeasure::render_dimensioning()
                 action_exit();
             };
 
-            ImGuiPureWrap::disable_background_fadeout_animation();
+            m_imgui->disable_background_fadeout_animation();
             ImGui::PushItemWidth(value_str_width);
             if (ImGui::InputDouble("##distance", &edit_value, 0.0f, 0.0f, "%.3f")) {
             }
@@ -1381,14 +1386,19 @@ void GLGizmoMeasure::render_dimensioning()
                 action_exit();
 
             ImGui::SameLine();
-            if (ImGuiPureWrap::button(_CTX_utf8(L_CONTEXT("Scale", "Verb"), "Verb")))
+            ImGuiWrapper::push_confirm_button_style();
+            if (m_imgui->button(_CTX(L_CONTEXT("Scale", "Verb"), "Verb")))
                 action_scale(edit_value, curr_value);
+            ImGuiWrapper::pop_confirm_button_style();
             ImGui::SameLine();
-            if (ImGuiPureWrap::button(_u8L("Cancel")))
+            ImGuiWrapper::push_cancel_button_style();
+            if (m_imgui->button(_L("Cancel")))
                 action_exit();
+            ImGuiWrapper::pop_cancel_button_style();
             ImGui::EndPopup();
         }
         ImGui::PopStyleVar(4);
+        ImGuiWrapper::pop_common_window_style();
     };
 
     auto point_edge = [this, shader](const Measure::SurfaceFeature& f1, const Measure::SurfaceFeature& f2) {
@@ -1469,16 +1479,11 @@ void GLGizmoMeasure::render_dimensioning()
         }
 
         const Camera& camera = wxGetApp().plater()->get_camera();
-#if !SLIC3R_OPENGL_ES
+#if ENABLE_GL_CORE_PROFILE
         if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
             shader->stop_using();
 
-#if SLIC3R_OPENGL_ES
-            shader = wxGetApp().get_shader("dashed_lines");
-#else
             shader = wxGetApp().get_shader("dashed_thick_lines");
-#endif // SLIC3R_OPENGL_ES
             if (shader == nullptr)
                 return;
 
@@ -1488,20 +1493,18 @@ void GLGizmoMeasure::render_dimensioning()
             shader->set_uniform("viewport_size", Vec2d(double(viewport[2]), double(viewport[3])));
             shader->set_uniform("width", 1.0f);
             shader->set_uniform("gap_size", 0.0f);
-#if !SLIC3R_OPENGL_ES
         }
         else
-            glsafe(::glLineWidth(2.0f));
-#endif // !SLIC3R_OPENGL_ES
+#endif // ENABLE_GL_CORE_PROFILE
+          glsafe(::glLineWidth(2.0f));
 
         // arc
         shader->set_uniform("projection_matrix", camera.get_projection_matrix());
         shader->set_uniform("view_model_matrix", camera.get_view_matrix() * Geometry::translation_transform(center));
         m_dimensioning.arc.render();
 
-#if !SLIC3R_OPENGL_ES
+#if ENABLE_GL_CORE_PROFILE
         if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
             shader->stop_using();
 
             shader = wxGetApp().get_shader("flat");
@@ -1509,11 +1512,10 @@ void GLGizmoMeasure::render_dimensioning()
                 return;
 
             shader->start_using();
-#if !SLIC3R_OPENGL_ES
         }
         else
-            glsafe(::glLineWidth(1.0f));
-#endif // !SLIC3R_OPENGL_ES
+#endif // ENABLE_GL_CORE_PROFILE
+          glsafe(::glLineWidth(1.0f));
 
         // arrows
         auto render_arrow = [this, shader, &camera, &normal, &center, &e1_unit, draw_radius, step, resolution](unsigned int endpoint_id) {
@@ -1565,10 +1567,11 @@ void GLGizmoMeasure::render_dimensioning()
         const Vec2d label_position_ss = TransformHelper::world_to_ss(label_position_world,
             camera.get_projection_matrix().matrix() * camera.get_view_matrix().matrix(), viewport);
 
-        ImGuiPureWrap::set_next_window_pos(label_position_ss.x(), viewport[3] - label_position_ss.y(), ImGuiCond_Always, 0.0f, 1.0f);
-        ImGuiPureWrap::set_next_window_bg_alpha(0.0f);
+        ImGuiWrapper::push_common_window_style(m_parent.get_scale());
+        m_imgui->set_next_window_pos(label_position_ss.x(), viewport[3] - label_position_ss.y(), ImGuiCond_Always, 0.0f, 1.0f);
+        m_imgui->set_next_window_bg_alpha(0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        ImGuiPureWrap::begin("##angle", ImGuiWindowFlags_NoMouseInputs | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove);
+        m_imgui->begin(wxString("##angle"), ImGuiWindowFlags_NoMouseInputs | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove);
         ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
         ImGui::AlignTextToFramePadding();
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
@@ -1577,11 +1580,12 @@ void GLGizmoMeasure::render_dimensioning()
         ImVec2 txt_size = ImGui::CalcTextSize(txt.c_str());
         const ImGuiStyle& style = ImGui::GetStyle();
         draw_list->AddRectFilled({ pos.x - style.FramePadding.x, pos.y + style.FramePadding.y }, { pos.x + txt_size.x + 2.0f * style.FramePadding.x , pos.y + txt_size.y + 2.0f * style.FramePadding.y },
-          ImGuiPSWrap::to_ImU32(ColorRGBA(0.5f, 0.5f, 0.5f, 0.5f)));
+          ImGuiWrapper::to_ImU32(ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f)));
         ImGui::SetCursorScreenPos({ pos.x + style.FramePadding.x, pos.y });
-        ImGuiPureWrap::text(txt);
-        ImGuiPureWrap::end();
+        m_imgui->text(txt);
+        m_imgui->end();
         ImGui::PopStyleVar();
+        ImGuiWrapper::pop_common_window_style();
     };
 
     auto arc_edge_plane = [this, arc_edge_edge](const Measure::SurfaceFeature& f1, const Measure::SurfaceFeature& f2) {
@@ -1718,9 +1722,9 @@ static void add_row_to_table(std::function<void(void)> col_1 = nullptr, std::fun
     col_2();
 }
 
-static void add_strings_row_to_table(const std::string& col_1, const ImVec4& col_1_color, const std::string& col_2, const ImVec4& col_2_color)
+static void add_strings_row_to_table(ImGuiWrapper& imgui, const std::string& col_1, const ImVec4& col_1_color, const std::string& col_2, const ImVec4& col_2_color)
 {
-    add_row_to_table([&]() { ImGuiPureWrap::text_colored(col_1_color, col_1); }, [&]() { ImGuiPureWrap::text_colored(col_2_color, col_2); });
+    add_row_to_table([&]() { imgui.text_colored(col_1_color, col_1); }, [&]() { imgui.text_colored(col_2_color, col_2); });
 };
 
 #if ENABLE_MEASURE_GIZMO_DEBUG
@@ -1728,27 +1732,27 @@ void GLGizmoMeasure::render_debug_dialog()
 {
     auto add_feature_data = [this](const SelectedFeatures::Item& item) {
         const std::string text = (item.source == item.feature) ? surface_feature_type_as_string(item.feature->get_type()) : point_on_feature_type_as_string(item.source->get_type(), m_hover_id);
-        add_strings_row_to_table(*m_imgui, "Type", ImGuiPureWrap::COL_ORANGE_LIGHT, text, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+        add_strings_row_to_table(*m_imgui, "Type", ImGuiWrapper::COL_ORCA, text, ImGui::GetStyleColorVec4(ImGuiCol_Text));
         switch (item.feature->get_type())
         {
         case Measure::SurfaceFeatureType::Point:
         {
-            add_strings_row_to_table(*m_imgui, "m_pt1", ImGuiPureWrap::COL_ORANGE_LIGHT, format_vec3(item.feature->get_point()), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            add_strings_row_to_table(*m_imgui, "m_pt1", ImGuiWrapper::COL_ORCA, format_vec3(item.feature->get_point()), ImGui::GetStyleColorVec4(ImGuiCol_Text));
             break;
         }
         case Measure::SurfaceFeatureType::Edge:
         {
             auto [from, to] = item.feature->get_edge();
-            add_strings_row_to_table(*m_imgui, "m_pt1", ImGuiPureWrap::COL_ORANGE_LIGHT, format_vec3(from), ImGui::GetStyleColorVec4(ImGuiCol_Text));
-            add_strings_row_to_table(*m_imgui, "m_pt2", ImGuiPureWrap::COL_ORANGE_LIGHT, format_vec3(to), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            add_strings_row_to_table(*m_imgui, "m_pt1", ImGuiWrapper::COL_ORCA, format_vec3(from), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            add_strings_row_to_table(*m_imgui, "m_pt2", ImGuiWrapper::COL_ORCA, format_vec3(to), ImGui::GetStyleColorVec4(ImGuiCol_Text));
             break;
         }
         case Measure::SurfaceFeatureType::Plane:
         {
             auto [idx, normal, origin] = item.feature->get_plane();
-            add_strings_row_to_table(*m_imgui, "m_pt1", ImGuiPureWrap::COL_ORANGE_LIGHT, format_vec3(normal), ImGui::GetStyleColorVec4(ImGuiCol_Text));
-            add_strings_row_to_table(*m_imgui, "m_pt2", ImGuiPureWrap::COL_ORANGE_LIGHT, format_vec3(origin), ImGui::GetStyleColorVec4(ImGuiCol_Text));
-            add_strings_row_to_table(*m_imgui, "m_value", ImGuiPureWrap::COL_ORANGE_LIGHT, format_double(idx), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            add_strings_row_to_table(*m_imgui, "m_pt1", ImGuiWrapper::COL_ORCA, format_vec3(normal), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            add_strings_row_to_table(*m_imgui, "m_pt2", ImGuiWrapper::COL_ORCA, format_vec3(origin), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            add_strings_row_to_table(*m_imgui, "m_value", ImGuiWrapper::COL_ORCA, format_double(idx), ImGui::GetStyleColorVec4(ImGuiCol_Text));
             break;
         }
         case Measure::SurfaceFeatureType::Circle:
@@ -1756,18 +1760,18 @@ void GLGizmoMeasure::render_debug_dialog()
             auto [center, radius, normal] = item.feature->get_circle();
             const Vec3d on_circle = center + radius * Measure::get_orthogonal(normal, true);
             radius = (on_circle - center).norm();
-            add_strings_row_to_table(*m_imgui, "m_pt1", ImGuiPureWrap::COL_ORANGE_LIGHT, format_vec3(center), ImGui::GetStyleColorVec4(ImGuiCol_Text));
-            add_strings_row_to_table(*m_imgui, "m_pt2", ImGuiPureWrap::COL_ORANGE_LIGHT, format_vec3(normal), ImGui::GetStyleColorVec4(ImGuiCol_Text));
-            add_strings_row_to_table(*m_imgui, "m_value", ImGuiPureWrap::COL_ORANGE_LIGHT, format_double(radius), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            add_strings_row_to_table(*m_imgui, "m_pt1", ImGuiWrapper::COL_ORCA, format_vec3(center), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            add_strings_row_to_table(*m_imgui, "m_pt2", ImGuiWrapper::COL_ORCA, format_vec3(normal), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            add_strings_row_to_table(*m_imgui, "m_value", ImGuiWrapper::COL_ORCA, format_double(radius), ImGui::GetStyleColorVec4(ImGuiCol_Text));
             break;
         }
         }
         std::optional<Vec3d> extra_point = item.feature->get_extra_point();
         if (extra_point.has_value())
-            add_strings_row_to_table(*m_imgui, "m_pt3", ImGuiPureWrap::COL_ORANGE_LIGHT, format_vec3(*extra_point), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            add_strings_row_to_table(*m_imgui, "m_pt3", ImGuiWrapper::COL_ORCA, format_vec3(*extra_point), ImGui::GetStyleColorVec4(ImGuiCol_Text));
     };
 
-    ImGuiPureWrap::begin("Measure tool debug", ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
+    m_imgui->begin("Measure tool debug", ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
     if (ImGui::BeginTable("Mode", 2)) {
         std::string txt;
         switch (m_mode)
@@ -1776,39 +1780,39 @@ void GLGizmoMeasure::render_debug_dialog()
         case EMode::PointSelection:   { txt = "Point selection"; break; }
         default:                      { assert(false); break; }
         }
-        add_strings_row_to_table(*m_imgui, "Mode", ImGuiPureWrap::COL_ORANGE_LIGHT, txt, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+        add_strings_row_to_table(*m_imgui, "Mode", ImGuiWrapper::COL_ORCA, txt, ImGui::GetStyleColorVec4(ImGuiCol_Text));
         ImGui::EndTable();
     }
 
     ImGui::Separator();
     if (ImGui::BeginTable("Hover", 2)) {
-        add_strings_row_to_table(*m_imgui, "Hover id", ImGuiPureWrap::COL_ORANGE_LIGHT, std::to_string(m_hover_id), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+        add_strings_row_to_table(*m_imgui, "Hover id", ImGuiWrapper::COL_ORCA, std::to_string(m_hover_id), ImGui::GetStyleColorVec4(ImGuiCol_Text));
         const std::string txt = m_curr_feature.has_value() ? surface_feature_type_as_string(m_curr_feature->get_type()) : "None";
-        add_strings_row_to_table(*m_imgui, "Current feature", ImGuiPureWrap::COL_ORANGE_LIGHT, txt, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+        add_strings_row_to_table(*m_imgui, "Current feature", ImGuiWrapper::COL_ORCA, txt, ImGui::GetStyleColorVec4(ImGuiCol_Text));
         ImGui::EndTable();
     }
 
     ImGui::Separator();
     if (!m_selected_features.first.feature.has_value() && !m_selected_features.second.feature.has_value())
-        ImGuiPureWrap::text("Empty selection");
+        m_imgui->text("Empty selection");
     else {
         const ImGuiTableFlags flags = ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersH;
         if (m_selected_features.first.feature.has_value()) {
-            ImGuiPureWrap::text_colored(ImGuiPureWrap::COL_ORANGE_LIGHT, "Selection 1");
+            m_imgui->text_colored(ImGuiWrapper::COL_ORCA, "Selection 1");
             if (ImGui::BeginTable("Selection 1", 2, flags)) {
                 add_feature_data(m_selected_features.first);
                 ImGui::EndTable();
             }
         }
         if (m_selected_features.second.feature.has_value()) {
-            ImGuiPureWrap::text_colored(ImGuiPureWrap::COL_ORANGE_LIGHT, "Selection 2");
+            m_imgui->text_colored(ImGuiWrapper::COL_ORCA, "Selection 2");
             if (ImGui::BeginTable("Selection 2", 2, flags)) {
                 add_feature_data(m_selected_features.second);
                 ImGui::EndTable();
             }
         }
     }
-    ImGuiPureWrap::end();
+    m_imgui->end();
 }
 #endif // ENABLE_MEASURE_GIZMO_DEBUG
 
@@ -1824,12 +1828,10 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
     if (m_editing_distance)
         return;
 
-    ImGuiPureWrap::begin(get_name(), ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
-
     // adjust window position to avoid overlap the view toolbar
     const float win_h = ImGui::GetWindowHeight();
     y = std::min(y, bottom_limit - win_h);
-    ImGui::SetWindowPos(ImVec2(x, y), ImGuiCond_Always);
+    GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
     if (last_h != win_h || last_y != y) {
         // ask canvas for another frame to render the window in the correct position
         m_imgui->set_requires_extra_frame();
@@ -1838,177 +1840,24 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
         if (last_y != y)
             last_y = y;
     }
+    
+    // Orca
+    ImGuiWrapper::push_toolbar_style(m_parent.get_scale());
 
-    if (ImGui::BeginTable("Commands", 2)) {
-        unsigned int row_count = 1;
-        add_row_to_table(
-            []() {
-                ImGuiPureWrap::text_colored(ImGuiPureWrap::COL_ORANGE_LIGHT, _u8L("Left mouse button"));
-            },
-            [this]() {
-                std::string text;
-                ColorRGBA color;
-                if (m_selected_features.second.feature.has_value()) {
-                    if (m_selected_features.first.feature == m_curr_feature && m_mode == EMode::FeatureSelection) {
-                        // hovering over 1st selected feature
-                        text = _u8L("Unselect feature");
-                        color = SELECTED_1ST_COLOR;
-                    }
-                    else if (m_hover_id == SEL_SPHERE_1_ID) {
-                        if (m_selected_features.first.is_center) {
-                            // hovering over center selected as 1st feature
-                            text = _u8L("Unselect center");
-                            color = SELECTED_1ST_COLOR;
-                        }
-                        else if (is_feature_with_center(*m_selected_features.first.feature)) {
-                            // hovering over center of 1st selected feature
-                            text = _u8L("Select center");
-                            color = SELECTED_1ST_COLOR;
-                        }
-                        else {
-                            // hovering over point selected as 1st feature
-                            text = _u8L("Unselect point");
-                            color = SELECTED_1ST_COLOR;
-                        }
-                    }
-                    else if (m_selected_features.first.is_center && m_selected_features.first.source == m_curr_feature) {
-                        // hovering over feature whose center is selected as 1st feature
-                        text = _u8L("Select feature");
-                        color = SELECTED_1ST_COLOR;
-                    }
-                    else if (m_selected_features.second.feature == m_curr_feature && m_mode == EMode::FeatureSelection) {
-                        // hovering over 2nd selected feature
-                        text = _u8L("Unselect feature");
-                        color = SELECTED_2ND_COLOR;
-                    }
-                    else if (m_hover_id == SEL_SPHERE_2_ID) {
-                        if (m_selected_features.second.is_center) {
-                            // hovering over center selected as 2nd feature
-                            text = _u8L("Unselect feature");
-                            color = SELECTED_2ND_COLOR;
-                        }
-                        else if (is_feature_with_center(*m_selected_features.second.feature)) {
-                            // hovering over center of 2nd selected feature
-                            text = _u8L("Select center");
-                            color = SELECTED_2ND_COLOR;
-                        }
-                        else {
-                            // hovering over point selected as 2nd feature
-                            text = _u8L("Unselect point");
-                            color = SELECTED_2ND_COLOR;
-                        }
-                    }
-                    else if (m_selected_features.second.is_center && m_selected_features.second.source == m_curr_feature) {
-                        // hovering over feature whose center is selected as 2nd feature
-                        text = _u8L("Select feature");
-                        color = SELECTED_2ND_COLOR;
-                    }
-                    else {
-                        // 1st feature selected
-                        text = (m_mode == EMode::PointSelection) ? _u8L("Select point") : _u8L("Select feature");
-                        color = SELECTED_2ND_COLOR;
-                    }
-                }
-                else {
-                    if (m_selected_features.first.feature.has_value()) {
-                        if (m_selected_features.first.feature == m_curr_feature && m_mode == EMode::FeatureSelection) {
-                            // hovering over 1st selected feature
-                            text = _u8L("Unselect feature");
-                            color = SELECTED_1ST_COLOR;
-                        }
-                        else {
-                            if (m_hover_id == SEL_SPHERE_1_ID) {
-                                if (m_selected_features.first.is_center) {
-                                    // hovering over center selected as 1st feature
-                                    text = _u8L("Unselect feature");
-                                    color = SELECTED_1ST_COLOR;
-                                }
-                                else if (is_feature_with_center(*m_selected_features.first.feature)) {
-                                    // hovering over center of 1st selected feature
-                                    text = _u8L("Select center");
-                                    color = SELECTED_1ST_COLOR;
-                                }
-                                else {
-                                    // hovering over point selected as 1st feature
-                                    text = _u8L("Unselect point");
-                                    color = SELECTED_1ST_COLOR;
-                                }
-                            }
-                            else {
-                                if (m_selected_features.first.is_center && m_selected_features.first.source == m_curr_feature) {
-                                    // hovering over feature whose center is selected as 1st feature
-                                    text = _u8L("Select feature");
-                                    color = SELECTED_1ST_COLOR;
-                                }
-                                else {
-                                    // 1st feature selected
-                                    text = (m_mode == EMode::PointSelection) ? _u8L("Select point") : _u8L("Select feature");
-                                    color = SELECTED_2ND_COLOR;
-                                }
-                            }
-                        }
-                    }
-                    else {
-                        // nothing is selected
-                        text = (m_mode == EMode::PointSelection) ? _u8L("Select point") : _u8L("Select feature");
-                        color = SELECTED_1ST_COLOR;
-                    }
-                }
+    GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
-                assert(!text.empty());
-
-                ImGuiPureWrap::text_colored(ImGui::GetStyleColorVec4(ImGuiCol_Text), text);
-                ImGui::SameLine();
-                const ImVec2 pos = ImGui::GetCursorScreenPos();
-                const float rect_size = ImGui::GetTextLineHeight();
-                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x + 1.0f, pos.y + 1.0f), ImVec2(pos.x + rect_size, pos.y + rect_size), ImGuiPSWrap::to_ImU32(color));
-                ImGui::Dummy(ImVec2(rect_size, rect_size));
-            }
-            );
-
-        if (m_mode == EMode::FeatureSelection && m_hover_id != -1) {
-            add_strings_row_to_table("Shift", ImGuiPureWrap::COL_ORANGE_LIGHT, _u8L("Enable point selection"), ImGui::GetStyleColorVec4(ImGuiCol_Text));
-            ++row_count;
-        }
-
-        if (m_selected_features.first.feature.has_value()) {
-            add_strings_row_to_table("Delete", ImGuiPureWrap::COL_ORANGE_LIGHT, _u8L("Restart selection"), ImGui::GetStyleColorVec4(ImGuiCol_Text));
-            ++row_count;
-        }
-
-        if (m_selected_features.first.feature.has_value() || m_selected_features.second.feature.has_value()) {
-          add_row_to_table(
-            []() {
-                ImGuiPureWrap::text_colored(ImGuiPureWrap::COL_ORANGE_LIGHT, "Esc");
-            },
-            [this]() {
-                ImGuiPureWrap::text_colored(ImGui::GetStyleColorVec4(ImGuiCol_Text), _u8L("Unselect"));
-                ImGui::SameLine();
-                const ImVec2 pos = ImGui::GetCursorScreenPos();
-                const float rect_size = ImGui::GetTextLineHeight();
-                const ColorRGBA color = m_selected_features.second.feature.has_value() ? SELECTED_2ND_COLOR : SELECTED_1ST_COLOR;
-                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x + 1.0f, pos.y + 1.0f), ImVec2(pos.x + rect_size, pos.y + rect_size), ImGuiPSWrap::to_ImU32(color));
-                ImGui::Dummy(ImVec2(rect_size, rect_size));
-            }
-            );
-          
-          ++row_count;
-        }
-
-        // add dummy rows to keep dialog size fixed
-        for (unsigned int i = row_count; i < 4; ++i) {
-            add_strings_row_to_table(" ", ImGuiPureWrap::COL_ORANGE_LIGHT, " ", ImGui::GetStyleColorVec4(ImGuiCol_Text));
-        }
-
-        ImGui::EndTable();
+    float caption_max    = 0.f;
+    float total_text_max = 0.f;
+    for (const auto &t : std::array<std::string, 4>{"feature_selection", "point_selection", "reset", "unselect"}) {
+        caption_max    = std::max(caption_max, m_imgui->calc_text_size(m_desc[t + "_caption"]).x);
+        total_text_max = std::max(total_text_max, m_imgui->calc_text_size(m_desc[t]).x);
     }
 
     const bool use_inches = wxGetApp().app_config->get_bool("use_inches");
     const std::string units = use_inches ? " " + _u8L("in") : " " + _u8L("mm");
 
-    ImGui::Separator();
-    const ImGuiTableFlags flags = ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersH;
-    if (ImGui::BeginTable("Selection", 2, flags)) {
+    // Show selection
+    {
         auto format_item_text = [this, use_inches, &units](const SelectedFeatures::Item& item) {
             if (!item.feature.has_value())
                 return _u8L("None");
@@ -2020,28 +1869,38 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
                 const Vec3d on_circle = center + radius * Measure::get_orthogonal(normal, true);
                 radius = (on_circle - center).norm();
                 if (use_inches)
-                    radius = ObjectManipulation::mm_to_in * radius;
+                    radius = GizmoObjectManipulation::mm_to_in * radius;
                 text += " (" + _u8L("Diameter") + ": " + format_double(2.0 * radius) + units + ")";
             }
             else if (item.feature.has_value() && item.feature->get_type() == Measure::SurfaceFeatureType::Edge) {
                 auto [start, end] = item.feature->get_edge();
                 double length = (end - start).norm();
                 if (use_inches)
-                    length = ObjectManipulation::mm_to_in * length;
+                    length = GizmoObjectManipulation::mm_to_in * length;
                 text += " (" + _u8L("Length") + ": " + format_double(length) + units + ")";
             }
             return text;
         };
 
-        add_strings_row_to_table(_u8L("Selection") + " 1:", ImGuiPSWrap::to_ImVec4(SELECTED_1ST_COLOR), format_item_text(m_selected_features.first),
-            ImGuiPSWrap::to_ImVec4(SELECTED_1ST_COLOR));
-        add_strings_row_to_table(_u8L("Selection") + " 2:", ImGuiPSWrap::to_ImVec4(SELECTED_2ND_COLOR), format_item_text(m_selected_features.second),
-            ImGuiPSWrap::to_ImVec4(SELECTED_2ND_COLOR));
-        ImGui::EndTable();
+        const float selection_cap_length = ImGui::CalcTextSize((_u8L("Selection") + " 1").c_str()).x * 2;
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGuiWrapper::to_ImVec4(SELECTED_1ST_COLOR));
+        m_imgui->text(_u8L("Selection") + " 1");
+        ImGui::SameLine(selection_cap_length);
+        m_imgui->text(format_item_text(m_selected_features.first));
+        ImGui::PopStyleColor();
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGuiWrapper::to_ImVec4(SELECTED_2ND_COLOR));
+        m_imgui->text(_u8L("Selection") + " 2");
+        ImGui::SameLine(selection_cap_length);
+        m_imgui->text(format_item_text(m_selected_features.second));
+        ImGui::PopStyleColor();
     }
 
     m_imgui->disabled_begin(!m_selected_features.first.feature.has_value());
-        if (ImGuiPureWrap::button(_u8L("Restart selection"))) {
+        if (m_imgui->button(_L("Restart selection"))) {
             m_selected_features.reset();
             m_selected_sphere_raycasters.clear();
             m_imgui->set_requires_extra_frame();
@@ -2051,19 +1910,19 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
     auto add_measure_row_to_table = [this](const std::string& col_1, const ImVec4& col_1_color, const std::string& col_2, const ImVec4& col_2_color) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        ImGuiPureWrap::text_colored(col_1_color, col_1);
+        m_imgui->text_colored(col_1_color, col_1);
         ImGui::TableSetColumnIndex(1);
-        ImGuiPureWrap::text_colored(col_2_color, col_2);
+        m_imgui->text_colored(col_2_color, col_2);
         ImGui::TableSetColumnIndex(2);
-        if (m_imgui->image_button(ImGui::ClipboardBtnIcon, _u8L("Copy to clipboard"))) {
+        if (m_imgui->image_button(m_is_dark_mode ? ImGui::ClipboardBtnDarkIcon : ImGui::ClipboardBtnIcon, _L("Copy to clipboard"))) {
             wxTheClipboard->Open();
-            wxTheClipboard->SetData(new wxTextDataObject(col_1 + ": " + col_2));
+            wxTheClipboard->SetData(new wxTextDataObject(wxString((col_1 + ": " + col_2).c_str(), wxConvUTF8)));
             wxTheClipboard->Close();
         }
     };
 
     ImGui::Separator();
-    ImGuiPureWrap::text(_u8L("Measure"));
+    m_imgui->text(_u8L("Measure"));
 
     const unsigned int max_measure_row_count = 2;
     unsigned int measure_row_count = 0;
@@ -2072,7 +1931,7 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
             const Measure::MeasurementResult& measure = m_measurement_result;
             if (measure.angle.has_value()) {
                 ImGui::PushID("ClipboardAngle");
-                add_measure_row_to_table(_u8L("Angle"), ImGuiPureWrap::COL_ORANGE_LIGHT, format_double(Geometry::rad2deg(measure.angle->angle)) + "°",
+                add_measure_row_to_table(_u8L("Angle"), ImGuiWrapper::COL_ORCA, format_double(Geometry::rad2deg(measure.angle->angle)) + "°",
                     ImGui::GetStyleColorVec4(ImGuiCol_Text));
                 ++measure_row_count;
                 ImGui::PopID();
@@ -2084,9 +1943,9 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
             if (measure.distance_infinite.has_value()) {
                 double distance = measure.distance_infinite->dist;
                 if (use_inches)
-                    distance = ObjectManipulation::mm_to_in * distance;
+                    distance = GizmoObjectManipulation::mm_to_in * distance;
                 ImGui::PushID("ClipboardDistanceInfinite");
-                add_measure_row_to_table(show_strict ? _u8L("Perpendicular distance") : _u8L("Distance"), ImGuiPureWrap::COL_ORANGE_LIGHT, format_double(distance) + units,
+                add_measure_row_to_table(show_strict ? _u8L("Perpendicular distance") : _u8L("Distance"), ImGuiWrapper::COL_ORCA, format_double(distance) + units,
                     ImGui::GetStyleColorVec4(ImGuiCol_Text));
                 ++measure_row_count;
                 ImGui::PopID();
@@ -2094,9 +1953,9 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
             if (show_strict) {
                 double distance = measure.distance_strict->dist;
                 if (use_inches)
-                    distance = ObjectManipulation::mm_to_in * distance;
+                    distance = GizmoObjectManipulation::mm_to_in * distance;
                 ImGui::PushID("ClipboardDistanceStrict");
-                add_measure_row_to_table(_u8L("Direct distance"), ImGuiPureWrap::COL_ORANGE_LIGHT, format_double(distance) + units,
+                add_measure_row_to_table(_u8L("Direct distance"), ImGuiWrapper::COL_ORCA, format_double(distance) + units,
                     ImGui::GetStyleColorVec4(ImGuiCol_Text));
                 ++measure_row_count;
                 ImGui::PopID();
@@ -2104,9 +1963,9 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
             if (measure.distance_xyz.has_value() && measure.distance_xyz->norm() > EPSILON) {
                 Vec3d distance = *measure.distance_xyz;
                 if (use_inches)
-                    distance = ObjectManipulation::mm_to_in * distance;
+                    distance = GizmoObjectManipulation::mm_to_in * distance;
                 ImGui::PushID("ClipboardDistanceXYZ");
-                add_measure_row_to_table(_u8L("Distance XYZ"), ImGuiPureWrap::COL_ORANGE_LIGHT, format_vec3(distance),
+                add_measure_row_to_table(_u8L("Distance XYZ"), ImGuiWrapper::COL_ORCA, format_vec3(distance),
                     ImGui::GetStyleColorVec4(ImGuiCol_Text));
                 ++measure_row_count;
                 ImGui::PopID();
@@ -2115,10 +1974,21 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
 
         // add dummy rows to keep dialog size fixed
         for (unsigned int i = measure_row_count; i < max_measure_row_count; ++i) {
-            add_strings_row_to_table(" ", ImGuiPureWrap::COL_ORANGE_LIGHT, " ", ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            add_strings_row_to_table(*m_imgui, " ", ImGuiWrapper::COL_ORCA, " ", ImGui::GetStyleColorVec4(ImGuiCol_Text));
         }
         ImGui::EndTable();
     }
+
+    ImGui::Separator();
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 10.0f));
+    float get_cur_y = ImGui::GetContentRegionMax().y + ImGui::GetFrameHeight() + y;
+    show_tooltip_information(caption_max, x, get_cur_y);
+
+    float f_scale =m_parent.get_gizmos_manager().get_layout_scale();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 4.0f * f_scale));
+
+    ImGui::PopStyleVar(2);
 
     if (last_feature != m_curr_feature || last_mode != m_mode || last_selected_features != m_selected_features) {
         // the dialog may have changed its size, ask for an extra frame to render it properly
@@ -2128,7 +1998,10 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
         m_imgui->set_requires_extra_frame();
     }
 
-    ImGuiPureWrap::end();
+    GizmoImguiEnd();
+
+    // Orca
+    ImGuiWrapper::pop_toolbar_style();
 }
 
 void GLGizmoMeasure::on_register_raycasters_for_picking()
@@ -2162,6 +2035,33 @@ void GLGizmoMeasure::update_measurement_result()
         m_measurement_result = Measure::get_measurement(*m_selected_features.first.feature, *m_selected_features.second.feature, m_measuring.get());
     else if (!m_selected_features.second.feature.has_value() && m_selected_features.first.feature->get_type() == Measure::SurfaceFeatureType::Circle)
         m_measurement_result = Measure::get_measurement(*m_selected_features.first.feature, Measure::SurfaceFeature(std::get<0>(m_selected_features.first.feature->get_circle())), m_measuring.get());
+}
+
+void GLGizmoMeasure::show_tooltip_information(float caption_max, float x, float y)
+{
+    ImTextureID normal_id = m_parent.get_gizmos_manager().get_icon_texture_id(GLGizmosManager::MENU_ICON_NAME::IC_TOOLBAR_TOOLTIP);
+    ImTextureID hover_id  = m_parent.get_gizmos_manager().get_icon_texture_id(GLGizmosManager::MENU_ICON_NAME::IC_TOOLBAR_TOOLTIP_HOVER);
+
+    caption_max += m_imgui->calc_text_size(std::string_view{": "}).x + 35.f;
+
+    float  scale       = m_parent.get_scale();
+    ImVec2 button_size = ImVec2(25 * scale, 25 * scale); // ORCA: Use exact resolution will prevent blur on icon
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, { 0, 0 }); // ORCA: Dont add padding
+    ImGui::ImageButton3(normal_id, hover_id, button_size);
+
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip2(ImVec2(x, y));
+        auto draw_text_with_caption = [this, &caption_max](const wxString &caption, const wxString &text) {
+            m_imgui->text_colored(ImGuiWrapper::COL_ACTIVE, caption);
+            ImGui::SameLine(caption_max);
+            m_imgui->text_colored(ImGuiWrapper::COL_WINDOW_BG, text);
+        };
+
+        for (const auto &t : std::array<std::string, 4>{"feature_selection", "point_selection", "reset", "unselect"}) draw_text_with_caption(m_desc.at(t + "_caption") + ": ", m_desc.at(t));
+        ImGui::EndTooltip();
+    }
+    ImGui::PopStyleVar(2);
 }
 
 } // namespace GUI

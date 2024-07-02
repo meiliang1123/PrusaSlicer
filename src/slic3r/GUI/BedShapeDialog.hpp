@@ -1,13 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2023 Oleksandra Iushchenko @YuSanka, Lukáš Hejl @hejllukas, Filip Sykala @Jony01, Vojtěch Bubník @bubnikv, Enrico Turri @enricoturri1966, Lukáš Matěna @lukasmatena
-///|/
-///|/ ported from lib/Slic3r/GUI/BedShapeDialog.pm:
-///|/ Copyright (c) Prusa Research 2016 - 2018 Vojtěch Král @vojtechkral, Vojtěch Bubník @bubnikv
-///|/ Copyright (c) 2017 Joseph Lenox @lordofhyphens
-///|/ Copyright (c) 2017 Ahmed Samir Abdelreheem @Samir55
-///|/ Copyright (c) Slic3r 2014 - 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_BedShapeDialog_hpp_
 #define slic3r_BedShapeDialog_hpp_
 // The bed shape dialog.
@@ -15,6 +5,7 @@
 
 #include "GUI_Utils.hpp"
 #include "2DBed.hpp"
+#include "I18N.hpp"
 
 #include <libslic3r/BuildVolume.hpp>
 
@@ -45,7 +36,7 @@ struct BedShape
 
     BedShape(const ConfigOptionPoints& points);
 
-    bool            is_custom() { return m_build_volume.type() == BuildVolume::Type::Convex || m_build_volume.type() == BuildVolume::Type::Custom; }
+    bool            is_custom() { return m_build_volume.type() == BuildVolume_Type::Convex || m_build_volume.type() == BuildVolume_Type::Custom; }
 
     static void     append_option_line(ConfigOptionsGroupShp optgroup, Parameter param);
     static wxString get_name(PageType type);
@@ -73,7 +64,7 @@ class BedShapePanel : public wxPanel
 public:
     BedShapePanel(wxWindow* parent) : wxPanel(parent, wxID_ANY), m_custom_texture(NONE), m_custom_model(NONE) {}
 
-    void build_panel(const ConfigOptionPoints& default_pt, const ConfigOptionString& custom_texture, const ConfigOptionString& custom_model);
+    void build_panel(const ConfigOptionPoints& default_pt, const std::string& custom_texture, const std::string& custom_model);
 
     // Returns the resulting bed shape polygon. This value will be stored to the ini file.
     const std::vector<Vec2d>& get_shape() const { return m_shape; }
@@ -102,7 +93,8 @@ class BedShapeDialog : public DPIDialog
 {
 	BedShapePanel*	m_panel;
 public:
-	BedShapeDialog(wxWindow* parent);
+	BedShapeDialog(wxWindow* parent) : DPIDialog(parent, wxID_ANY, _(L("Bed Shape")),
+        wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE) {}
 
     void build_dialog(const ConfigOptionPoints& default_pt, const ConfigOptionString& custom_texture, const ConfigOptionString& custom_model);
 

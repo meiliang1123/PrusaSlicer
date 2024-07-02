@@ -23,8 +23,6 @@ class GLGizmoFlatten : public GLGizmoBase
 
 private:
 
-    GLModel arrow;
-
     struct PlaneData {
         std::vector<Vec3d> vertices; // should be in fact local in update_planes()
         PickingModel vbo;
@@ -65,8 +63,8 @@ protected:
     std::string on_get_name() const override;
     bool on_is_activable() const override;
     void on_render() override;
-    virtual void on_register_raycasters_for_picking() override;
-    virtual void on_unregister_raycasters_for_picking() override;
+    void on_register_raycasters_for_picking() override;
+    void on_unregister_raycasters_for_picking() override;
     void on_set_state() override;
     CommonGizmosDataID on_get_requirements() const override;
 };

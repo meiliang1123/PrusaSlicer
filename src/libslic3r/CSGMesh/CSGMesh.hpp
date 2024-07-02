@@ -1,14 +1,8 @@
-///|/ Copyright (c) Prusa Research 2022 - 2023 Tomáš Mészáros @tamasmeszaros
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef CSGMESH_HPP
 #define CSGMESH_HPP
 
-#include "libslic3r/Point.hpp"
-
 #include <libslic3r/AnyPtr.hpp>
-#include <libslic3r/TriangleMesh.hpp>
+#include <admesh/stl.h>
 
 namespace Slic3r { namespace csg {
 
@@ -76,6 +70,7 @@ struct CSGPart {
     Transform3f trafo;
     CSGType operation;
     CSGStackOp stack_operation;
+    std::string name;
 
     CSGPart(AnyPtr<const indexed_triangle_set> ptr = {},
             CSGType                            op  = CSGType::Union,
@@ -86,38 +81,6 @@ struct CSGPart {
         , trafo{tr}
     {}
 };
-
-// Check if there are only positive parts (Union) within the collection.
-template<class Cont> bool is_all_positive(const Cont &csgmesh)
-{
-    bool is_all_pos =
-        std::all_of(csgmesh.begin(),
-                    csgmesh.end(),
-                    [](auto &part) {
-                        return csg::get_operation(part) == csg::CSGType::Union;
-                    });
-
-    return is_all_pos;
-}
-
-// Merge all the positive parts of the collection into a single triangle mesh without performing
-// any booleans.
-template<class Cont>
-indexed_triangle_set csgmesh_merge_positive_parts(const Cont &csgmesh)
-{
-    indexed_triangle_set m;
-    for (auto &csgpart : csgmesh) {
-        auto op = csg::get_operation(csgpart);
-        const indexed_triangle_set * pmesh = csg::get_mesh(csgpart);
-        if (pmesh && op == csg::CSGType::Union) {
-            indexed_triangle_set mcpy = *pmesh;
-            its_transform(mcpy, csg::get_transform(csgpart), true);
-            its_merge(m, mcpy);
-        }
-    }
-
-    return m;
-}
 
 }} // namespace Slic3r::csg
 

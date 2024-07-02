@@ -19,6 +19,7 @@
 
 // temporary
 //#include "../tools/svgtools.hpp"
+//#include <iomanip> // setprecision
 
 #include <libnest2d/parallel.hpp>
 
@@ -36,8 +37,9 @@ struct NfpPConfig {
         BOTTOM_RIGHT,
         TOP_LEFT,
         TOP_RIGHT,
-        DONT_ALIGN      //!> Warning: parts may end up outside the bin with the
+        DONT_ALIGN,     //!> Warning: parts may end up outside the bin with the
                         //! default object function.
+        USER_DEFINED
     };
 
     /// Which angles to try out for better results.
@@ -48,6 +50,8 @@ struct NfpPConfig {
 
     /// Where to start putting objects in the bin.
     Alignment starting_point;
+
+    TPoint<RawShape> best_object_pos;
 
     /**
      * @brief A function object representing the fitting function in the
@@ -66,7 +70,7 @@ struct NfpPConfig {
      * the already packed items.
      *
      */
-    std::function<double(const _Item<RawShape>&)> object_function;
+    std::function<double(const _Item<RawShape>&, const ItemGroup&)> object_function;
 
     /**
      * @brief The quality of search for an optimal placement.
@@ -119,6 +123,13 @@ struct NfpPConfig {
 
     std::function<void(const ItemGroup &, NfpPConfig &config)> on_preload;
 
+    //BBS: sort function for selector
+    std::function<bool(_Item<RawShape>& i1, _Item<RawShape>& i2)> sortfunc;
+    //BBS: excluded region for V4 bed
+    std::vector<_Item<RawShape> > m_excluded_regions;
+    _ItemGroup<RawShape> m_excluded_items;
+    std::vector < _Item<RawShape> > m_nonprefered_regions;
+
     NfpPConfig(): rotations({0.0, Pi/2.0, Pi, 3*Pi/2}),
         alignment(Alignment::CENTER), starting_point(Alignment::CENTER) {}
 };
@@ -157,47 +168,31 @@ template<class RawShape> class EdgeCache {
 
     void createCache(const RawShape& sh) {
         {   // For the contour
-            auto first = sl::cbegin(sh);
-            auto endit = sl::cend(sh);
-            auto next = first == endit ? endit : std::next(first);
+            auto first = shapelike::cbegin(sh);
+            auto next = std::next(first);
+            auto endit = shapelike::cend(sh);
 
-            contour_.distances.reserve(sl::contourVertexCount(sh));
+            contour_.distances.reserve(shapelike::contourVertexCount(sh));
 
             while(next != endit) {
                 contour_.emap.emplace_back(*(first++), *(next++));
                 contour_.full_distance += length(contour_.emap.back());
                 contour_.distances.emplace_back(contour_.full_distance);
             }
-
-            if constexpr (ClosureTypeV<RawShape> == Closure::OPEN) {
-                if (sl::contourVertexCount(sh) > 0) {
-                    contour_.emap.emplace_back(sl::back(sh), sl::front(sh));
-                    contour_.full_distance += length(contour_.emap.back());
-                    contour_.distances.emplace_back(contour_.full_distance);
-                }
-            }
         }
 
         for(auto& h : shapelike::holes(sh)) { // For the holes
-            auto first = sl::cbegin(h);
-            auto endit = sl::cend(h);
-            auto next = first == endit ? endit :std::next(first);
+            auto first = h.begin();
+            auto next = std::next(first);
+            auto endit = h.end();
 
             ContourCache hc;
-            hc.distances.reserve(sl::contourVertexCount(h));
+            hc.distances.reserve(endit - first);
 
             while(next != endit) {
                 hc.emap.emplace_back(*(first++), *(next++));
                 hc.full_distance += length(hc.emap.back());
                 hc.distances.emplace_back(hc.full_distance);
-            }
-
-            if constexpr (ClosureTypeV<RawShape> == Closure::OPEN) {
-                if (sl::contourVertexCount(h) > 0) {
-                    hc.emap.emplace_back(sl::back(sh), sl::front(sh));
-                    hc.full_distance += length(hc.emap.back());
-                    hc.distances.emplace_back(hc.full_distance);
-                }
             }
 
             holes_.emplace_back(std::move(hc));
@@ -222,6 +217,7 @@ template<class RawShape> class EdgeCache {
         contour_.corners.reserve(N / S + 1);
         contour_.corners.emplace_back(0.0);
         auto N_1 = N-1;
+        contour_.corners.emplace_back(0.0);
         for(size_t i = 0; i < N_1; i += S) {
             contour_.corners.emplace_back(
                     contour_.distances.at(i) / contour_.full_distance);
@@ -454,13 +450,15 @@ private:
 
     // Norming factor for the optimization function
     const double norm_;
+    double score_ = 0;  // BBS: total costs of putting all the items
+    int plate_id = 0;   // BBS
     Pile merged_pile_;
 
 public:
 
     inline explicit _NofitPolyPlacer(const BinType& bin):
         Base(bin),
-        norm_(std::sqrt(sl::area(bin)))
+        norm_(std::sqrt(abs(sl::area(bin))))
     {
         // In order to not have items out of bin, it will be shrinked by an
         // very little empiric offset value.
@@ -475,18 +473,24 @@ public:
     _NofitPolyPlacer& operator=(_NofitPolyPlacer&&) = default;
 #endif
 
+    double score() const { return score_; }
+
+    //BBS
+    void plateID(int id) { plate_id = id; }
+    int plateID() { return plate_id; }
+
     static inline double overfit(const Box& bb, const RawShape& bin) {
         auto bbin = sl::boundingBox(bin);
         auto d = bbin.center() - bb.center();
         _Rectangle<RawShape> rect(bb.width(), bb.height());
         rect.translate(bb.minCorner() + d);
-        return sl::isInside(rect.transformedShape(), bin) ? -1.0 : 1;
+        return sl::isInside(rect.transformedShape(), bin) ? -1.5 : 1;
     }
 
     static inline double overfit(const RawShape& chull, const RawShape& bin) {
         auto bbch = sl::boundingBox(chull);
         auto bbin = sl::boundingBox(bin);
-        auto d =  bbch.center() - bbin.center();
+        auto d = bbin.center() - bbch.center(); // move to bin center
         auto chullcpy = chull;
         sl::translate(chullcpy, d);
         return sl::isInside(chullcpy, bin) ? -1.0 : 1.0;
@@ -524,24 +528,45 @@ public:
         return diff;
     }
 
+    template<class Range = ConstItemRange<typename Base::DefaultIter>>
+    PackResult trypack(Item& item,
+                        const Range& remaining = Range()) {
+        auto result = _trypack(item, remaining);
+
+        // Experimental
+        // if(!result) repack(item, result);
+
+        return result;
+    }
+
+    void accept(PackResult& r) {
+        if (r) {
+            r.item_ptr_->translation(r.move_);
+            r.item_ptr_->rotation(r.rot_);
+            items_.emplace_back(*(r.item_ptr_));
+            merged_pile_ = nfp::merge(merged_pile_, r.item_ptr_->transformedShape());
+            score_ += r.score();
+        }
+    }
+
     ~_NofitPolyPlacer() {
         clearItems();
     }
 
     inline void clearItems() {
         finalAlign(bin_);
-        merged_pile_ = {};
         Base::clearItems();
+    }
+
+    //clearFunc: itm will be cleared if return ture
+    inline void clearItems(const std::function<bool(const Item &itm)> &clearFunc)
+    {
+        finalAlign(bin_);
+        Base::clearItems(clearFunc);
     }
 
     void preload(const ItemGroup& packeditems) {
         Base::preload(packeditems);
-
-        for (const Item& itm : packeditems)
-            merged_pile_.emplace_back(itm.transformedShape());
-
-        nfp::merge(merged_pile_);
-
         if (config_.on_preload)
             config_.on_preload(packeditems, config_);
     }
@@ -550,7 +575,7 @@ private:
 
     using Shapes = TMultiShape<RawShape>;
 
-    Shapes calcnfp(const Item &trsh, Lvl<nfp::NfpLevel::CONVEX_ONLY>)
+    Shapes calcnfp(const Item &trsh, const Box& bed ,Lvl<nfp::NfpLevel::CONVEX_ONLY>)
     {
         using namespace nfp;
 
@@ -583,9 +608,26 @@ private:
             nfps[n] = subnfp_r.first;
         });
 
-        return nfp::merge(nfps);
+        RawShape innerNfp = nfpInnerRectBed(bed, trsh.transformedShape()).first;
+        return nfp::subtract({innerNfp}, nfps);
     }
 
+    Shapes calcnfp(const RawShape &sliding, const Shapes &stationarys, const Box &bed, Lvl<nfp::NfpLevel::CONVEX_ONLY>)
+    {
+        using namespace nfp;
+
+        Shapes nfps(stationarys.size());
+        Item   slidingItem(sliding);
+        slidingItem.transformedShape();
+        __parallel::enumerate(stationarys.begin(), stationarys.end(), [&nfps, sliding, &slidingItem](const RawShape &stationary, size_t n) {
+            auto subnfp_r = noFitPolygon<NfpLevel::CONVEX_ONLY>(stationary, sliding);
+            correctNfpPosition(subnfp_r, stationary, slidingItem);
+            nfps[n] = subnfp_r.first;
+        });
+
+        RawShape innerNfp = nfpInnerRectBed(bed, sliding).first;
+        return nfp::subtract({innerNfp}, nfps);
+    }
 
     template<class Level>
     Shapes calcnfp(const Item &/*trsh*/, Level)
@@ -617,9 +659,8 @@ private:
 
     using Edges = EdgeCache<RawShape>;
 
-public:
     template<class Range = ConstItemRange<typename Base::DefaultIter>>
-    PackResult trypack(
+    PackResult _trypack(
             Item& item,
             const Range& remaining = Range()) {
 
@@ -645,11 +686,14 @@ public:
         double norm = norm_;
         auto pbb = sl::boundingBox(merged_pile_);
         auto binbb = sl::boundingBox(bin);
+        auto origin = binbb.center();
+        if(config_.alignment== Config::Alignment::BOTTOM_LEFT)
+            origin = binbb.minCorner();
 
         // This is the kernel part of the object function that is
         // customizable by the library client
         std::function<double(const Item&)> _objfunc;
-        if(config_.object_function) _objfunc = config_.object_function;
+        if (config_.object_function) _objfunc = [this](const Item& item) {return config_.object_function(item, this->items_); };
         else {
 
             // Inside check has to be strict if no alignment was enabled
@@ -667,14 +711,15 @@ public:
                     miss = miss > 0? miss : 0;
                     return std::pow(miss, 2);
                 };
-
-            _objfunc = [norm, binbb, pbb, ins_check](const Item& item)
+            auto alignment = config_.alignment;
+            _objfunc = [norm, origin, pbb, ins_check, alignment](const Item& item)
             {
                 auto ibb = item.boundingBox();
                 auto fullbb = sl::boundingBox(pbb, ibb);
 
-                double score = pl::distance(ibb.center(),
-                                            binbb.center());
+                double score = pl::distance(ibb.center(), origin);
+                if(alignment==Config::Alignment::BOTTOM_LEFT)
+                    score = std::abs(ibb.center().y() - origin.y());
                 score /= norm;
 
                 score += ins_check(fullbb);
@@ -683,18 +728,31 @@ public:
             };
         }
 
-        if(items_.empty()) {
+        bool first_object = std::all_of(items_.begin(), items_.end(), [&](const Item &rawShape) { return rawShape.is_virt_object && !rawShape.is_wipe_tower; });
+
+        // item won't overlap with virtual objects if it's inside or touches NFP
+        auto overlapWithVirtObject = [&]() -> double {
+            if (items_.empty()) return 0;
+            nfps   = calcnfp(item, binbb, Lvl<MaxNfpLevel::value>());
+            auto v = item.referenceVertex();
+            for (const RawShape &nfp : nfps) {
+                if (sl::isInside(v, nfp) || sl::touches(v, nfp)) { return 0; }
+            }
+            return 1;
+        };
+
+        if (first_object) {
             setInitialPosition(item);
             auto best_tr = item.translation();
             auto best_rot = item.rotation();
-            best_overfit = overfit(item.transformedShape(), bin_);
+            best_overfit = overfit(item.transformedShape(), bin_) + overlapWithVirtObject();
 
             for(auto rot : config_.rotations) {
                 item.translation(initial_tr);
                 item.rotation(initial_rot + rot);
                 setInitialPosition(item);
                 double of = 0.;
-                if ((of = overfit(item.transformedShape(), bin_)) < best_overfit) {
+                if ((of = overfit(item.transformedShape(), bin_)) + overlapWithVirtObject() < best_overfit) {
                     best_overfit = of;
                     best_tr = item.translation();
                     best_rot = item.rotation();
@@ -702,9 +760,12 @@ public:
             }
 
             can_pack = best_overfit <= 0;
+            if (can_pack)
+                global_score = 0.2;
             item.rotation(best_rot);
             item.translation(best_tr);
-        } else {
+        }
+        if (can_pack == false) {
 
             Pile merged_pile = merged_pile_;
 
@@ -718,7 +779,8 @@ public:
                 // it is disjunct from the current merged pile
                 placeOutsideOfBin(item);
 
-                nfps = calcnfp(item, Lvl<MaxNfpLevel::value>());
+                nfps = calcnfp(item, binbb, Lvl<MaxNfpLevel::value>());
+
 
                 auto iv = item.referenceVertex();
 
@@ -886,7 +948,7 @@ public:
                     }
                 }
 
-                if( best_score < global_score ) {
+                if( best_score < global_score) {
                     auto d = (getNfpPoint(optimum) - iv) + startpos;
                     final_tr = d;
                     final_rot = initial_rot + rot;
@@ -899,10 +961,39 @@ public:
             item.rotation(final_rot);
         }
 
+#ifdef SVGTOOLS_HPP
+        svg::SVGWriter<RawShape> svgwriter;
+        Box binbb2(binbb.width() * 2, binbb.height() * 2, binbb.center()); // expand bbox to allow object be drawed outside
+        svgwriter.setSize(binbb2);
+        svgwriter.conf_.x0 = binbb.width();
+        svgwriter.conf_.y0 = -binbb.height()/2; // origin is top left corner
+        svgwriter.writeShape(box2RawShape(binbb), "none", "black");
+        for (int i = 0; i < nfps.size(); i++)
+            svgwriter.writeShape(nfps[i], "none", "blue");
+        for (int i = 0; i < items_.size(); i++)
+            svgwriter.writeItem(items_[i], "none", "black");
+        for (int i = 0; i < merged_pile_.size(); i++)
+            svgwriter.writeShape(merged_pile_[i], "none", "yellow");
+        svgwriter.writeItem(item, "none", "red", 2);
+
+        std::stringstream ss;
+        ss.setf(std::ios::fixed | std::ios::showpoint);
+        ss.precision(1);
+        ss << "t=" << round(item.translation().x() / 1e6) << "," << round(item.translation().y() / 1e6)
+            //<< "-rot=" << round(item.rotation().toDegrees())
+            << "-sco=" << round(global_score);
+        svgwriter.draw_text(20, 20, ss.str(), "blue", 20);
+        ss.str("");
+        ss << "items.size=" << items_.size()
+            << "-merged_pile.size=" << merged_pile_.size();
+        svgwriter.draw_text(20, 40, ss.str(), "blue", 20);
+        svgwriter.save(boost::filesystem::path("SVG")/ ("nfpplacer_" + std::to_string(plate_id) + "_" + ss.str() + "_" + item.name + ".svg"));
+#endif
+
         if(can_pack) {
             ret = PackResult(item);
-            item.onPacked();
-            merged_pile_ = nfp::merge(merged_pile_, item.transformedShape());
+            ret.score_ = global_score;
+            //merged_pile_ = nfp::merge(merged_pile_, item.transformedShape());
         } else {
             ret = PackResult(best_overfit);
         }
@@ -910,9 +1001,54 @@ public:
         return ret;
     }
 
-private:
+    RawShape box2RawShape(Box& bbin)
+    {
+        RawShape binrsh;
+        auto minx = getX(bbin.minCorner());
+        auto miny = getY(bbin.minCorner());
+        auto maxx = getX(bbin.maxCorner());
+        auto maxy = getY(bbin.maxCorner());
+        sl::addVertex(binrsh, {minx, miny});
+        sl::addVertex(binrsh, {maxx, miny});
+        sl::addVertex(binrsh, {maxx, maxy});
+        sl::addVertex(binrsh, {minx, maxy});
+        return binrsh;
+    }
+#if 0
+    Box inscribedBox(ClipperLib::Polygon bin_)
+    {
+        Box bbin = sl::boundingBox(bin_);
+        Vertex cb = bbin.center();
+        auto minx = getX(bbin.minCorner());
+        auto miny = getY(bbin.minCorner());
+        auto maxx = getX(bbin.maxCorner());
+        auto maxy = getY(bbin.maxCorner());
+        for (auto pt : bin_.Contour)
+        {
+            if (getX(pt) < getX(cb))
+                minx = std::max(minx, getX(pt));
+            if (getY(pt) < getY(cb))
+                miny = std::max(miny, getY(pt));
+            if (getX(pt) > getX(cb))
+                maxx = std::min(maxx, getX(pt));
+            if (getY(pt) > getY(cb))
+                maxy = std::min(maxy, getY(pt));
+        }
+        return Box(TPoint<RawShape>(minx, miny), TPoint<RawShape>(maxx, maxy));
+    }
+    Box inscribedBox(Box bin_)
+    {
+        Box bbin = sl::boundingBox(bin_);
+        return bbin;
+    }
+    Box inscribedBox(_Circle<TPoint<RawShape>> bin_)
+    { // TODO inscribed box of circle need to reconsider. Here it's just bounding box
+        Box bbin = sl::boundingBox(bin_);
+        return bbin;
+    }
+#endif
     inline void finalAlign(const RawShape& pbin) {
-        auto bbin = sl::boundingBox(pbin);
+        auto bbin = sl::boundingBox(pbin);//inscribedBox(pbin);
         finalAlign(bbin);
     }
 
@@ -934,9 +1070,10 @@ private:
         if(items_.empty() ||
                 config_.alignment == Config::Alignment::DONT_ALIGN) return;
 
-        Box bb = items_.front().get().boundingBox();
-        for(Item& item : items_)
-            bb = sl::boundingBox(item.boundingBox(), bb);
+        Box bb;
+        for (Item& item : items_)
+            if (!item.is_virt_object)
+                bb = sl::boundingBox(item.boundingBox(), bb);
 
         Vertex ci, cb;
 
@@ -966,18 +1103,67 @@ private:
             cb = bbin.maxCorner();
             break;
         }
+        case Config::Alignment::USER_DEFINED: {
+            ci = bb.center();
+            cb = config_.best_object_pos;
+            break;
+        }
         default: ; // DONT_ALIGN
         }
 
-        auto d = cb - ci;
-        for(Item& item : items_) item.translate(d);
+        auto d = cb - ci;       
+
+        // BBS make sure the item won't clash with excluded regions
+        // do we have wipe tower after arranging?
+        std::set<int> extruders;
+        for (const Item& item : items_) {
+            if (!item.is_virt_object) { extruders.insert(item.extrude_ids.begin(), item.extrude_ids.end()); }
+        }
+        bool need_wipe_tower = extruders.size() > 1;
+
+        std::vector<RawShape> objs,excludes;
+        for (const Item &item : items_) {
+            if (item.isFixed()) continue;
+            objs.push_back(item.transformedShape());
+        }
+        if (objs.empty())
+            return;
+        { // find a best position inside NFP of fixed items (excluded regions), so the center of pile is cloest to bed center
+            RawShape objs_convex_hull = sl::convexHull(objs);
+            for (const Item &item : items_) {
+                if (item.isFixed()) {
+        		    excludes.push_back(item.transformedShape());
+                }
+            }
+
+            auto   nfps = calcnfp(objs_convex_hull, excludes, bbin, Lvl<MaxNfpLevel::value>());
+            if (nfps.empty()) {
+                return;
+            }
+            Item   objs_convex_hull_item(objs_convex_hull);
+            Vertex objs_convex_hull_ref = objs_convex_hull_item.referenceVertex();
+            Vertex diff                 = objs_convex_hull_ref - sl::boundingBox(objs_convex_hull).center();
+            Vertex ref_aligned = cb + diff;  // reference point when pile center aligned with bed center
+            bool ref_aligned_is_ok = std::any_of(nfps.begin(), nfps.end(), [&ref_aligned](auto& nfp) {return sl::isInside(ref_aligned, nfp); });
+            if (!ref_aligned_is_ok) {
+                // ref_aligned is not good, then find a nearest point on nfp boundary
+                Vertex ref_projected = projection_onto(nfps, ref_aligned);
+                d +=  (ref_projected - ref_aligned);
+            }
+        }
+        for(Item& item : items_)
+            if (!item.is_virt_object)
+                item.translate(d);
     }
 
     void setInitialPosition(Item& item) {
         Box bb = item.boundingBox();
         
         Vertex ci, cb;
-        auto bbin = sl::boundingBox(bin_);
+        Box    bbin = sl::boundingBox(bin_);
+        Vertex shrink(10, 10);
+        bbin.maxCorner() -= shrink;
+        bbin.minCorner() += shrink;
 
         switch(config_.starting_point) {
         case Config::Alignment::CENTER: {

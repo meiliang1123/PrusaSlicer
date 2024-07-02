@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2019 - 2023 Oleksandra Iushchenko @YuSanka, Vojtěch Bubník @bubnikv, Enrico Turri @enricoturri1966, Filip Sykala @Jony01, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/AppConfig.hpp"
 
@@ -24,6 +20,7 @@ double Camera::FrustrumMinZRange = 50.0;
 double Camera::FrustrumMinNearZ = 100.0;
 double Camera::FrustrumZMargin = 10.0;
 double Camera::MaxFovDeg = 60.0;
+double Camera::ZoomUnit = 0.1;
 
 std::string Camera::get_type_as_string() const
 {
@@ -40,8 +37,9 @@ void Camera::set_type(EType type)
 {
     if (m_type != type && (type == EType::Ortho || type == EType::Perspective)) {
         m_type = type;
-        if (m_update_config_on_type_change_enabled)
-            wxGetApp().app_config->set("use_perspective_camera", (m_type == EType::Perspective) ? "1" : "0");
+        if (m_update_config_on_type_change_enabled) {
+            wxGetApp().app_config->set_bool("use_perspective_camera", m_type == EType::Perspective);
+        }
     }
 }
 
@@ -54,9 +52,19 @@ void Camera::select_next_type()
     set_type((EType)next);
 }
 
+void Camera::translate(const Vec3d& displacement) {
+    if (!displacement.isApprox(Vec3d::Zero())) {
+        m_view_matrix.translate(-displacement);
+        update_target(); 
+    }
+}
+
 void Camera::set_target(const Vec3d& target)
 {
-    const Vec3d new_target = validate_target(target);
+    //BBS do not check validation
+    //const Vec3d new_target = validate_target(target);
+    update_target();
+    const Vec3d new_target = target;
     const Vec3d new_displacement = new_target - m_target;
     if (!new_displacement.isApprox(Vec3d::Zero())) {
         m_target = new_target;
@@ -91,6 +99,11 @@ void Camera::select_view(const std::string& direction)
         look_at(m_target - m_distance * Vec3d::UnitY(), m_target, Vec3d::UnitZ());
     else if (direction == "rear")
         look_at(m_target + m_distance * Vec3d::UnitY(), m_target, Vec3d::UnitZ());
+    else if (direction == "topfront")
+        look_at(m_target - 0.707 * m_distance * Vec3d::UnitY() + 0.707 * m_distance * Vec3d::UnitZ(), m_target, Vec3d::UnitY() + Vec3d::UnitZ());
+    else if (direction == "plate") {
+        look_at(m_target - 0.707 * m_distance * Vec3d::UnitY() + 0.707 * m_distance * Vec3d::UnitZ(), m_target, Vec3d::UnitY() + Vec3d::UnitZ());
+    }
 }
 
 double Camera::get_near_left() const
@@ -287,7 +300,9 @@ void Camera::debug_render() const
     imgui.begin(std::string("Camera statistics"), ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
     std::string type = get_type_as_string();
-    if (wxGetApp().plater()->get_mouse3d_controller().connected() || (wxGetApp().app_config->get_bool("use_free_camera")))
+    if (wxGetApp().plater()->get_mouse3d_controller().connected()
+        || (wxGetApp().app_config->get_bool("use_free_camera"))
+        )
         type += "/free";
     else
         type += "/constrained";
@@ -333,6 +348,28 @@ void Camera::debug_render() const
 }
 #endif // ENABLE_CAMERA_STATISTICS
 
+void Camera::rotate_on_sphere_with_target(double delta_azimut_rad, double delta_zenit_rad, bool apply_limits, Vec3d target)
+{
+    m_zenit += Geometry::rad2deg(delta_zenit_rad);
+    if (apply_limits) {
+        if (m_zenit > 90.0f) {
+            delta_zenit_rad -= Geometry::deg2rad(m_zenit - 90.0f);
+            m_zenit = 90.0f;
+        }
+        else if (m_zenit < -90.0f) {
+            delta_zenit_rad -= Geometry::deg2rad(m_zenit + 90.0f);
+            m_zenit = -90.0f;
+        }
+    }
+
+    Vec3d translation = m_view_matrix.translation() + m_view_rotation * target;
+    auto rot_z = Eigen::AngleAxisd(delta_azimut_rad, Vec3d::UnitZ());
+    m_view_rotation *= rot_z * Eigen::AngleAxisd(delta_zenit_rad, rot_z.inverse() * get_dir_right());
+    m_view_rotation.normalize();
+    m_view_matrix.fromPositionOrientationScale(m_view_rotation * (-target) + translation, m_view_rotation, Vec3d(1., 1., 1.));
+}
+
+
 void Camera::rotate_on_sphere(double delta_azimut_rad, double delta_zenit_rad, bool apply_limits)
 {
     m_zenit += Geometry::rad2deg(delta_zenit_rad);
@@ -354,6 +391,20 @@ void Camera::rotate_on_sphere(double delta_azimut_rad, double delta_zenit_rad, b
     m_view_matrix.fromPositionOrientationScale(m_view_rotation * (- m_target) + translation, m_view_rotation, Vec3d(1., 1., 1.));
 }
 
+//BBS rotate with target
+void Camera::rotate_local_with_target(const Vec3d& rotation_rad, Vec3d target)
+{
+    double angle = rotation_rad.norm();
+    if (std::abs(angle) > EPSILON) {
+	    Vec3d translation = m_view_matrix.translation() + m_view_rotation * target;
+	    Vec3d axis        = m_view_rotation.conjugate() * rotation_rad.normalized();
+        m_view_rotation *= Eigen::Quaterniond(Eigen::AngleAxisd(angle, axis));
+        m_view_rotation.normalize();
+	    m_view_matrix.fromPositionOrientationScale(m_view_rotation * (-target) + translation, m_view_rotation, Vec3d(1., 1., 1.));
+	    update_zenit();
+	}
+}
+
 // Virtual trackball, rotate around an axis, where the eucledian norm of the axis gives the rotation angle in radians.
 void Camera::rotate_local_around_target(const Vec3d& rotation_rad)
 {
@@ -368,12 +419,19 @@ void Camera::rotate_local_around_target(const Vec3d& rotation_rad)
 	}
 }
 
+void Camera::set_rotation(const Transform3d& rotation)
+{
+    const Vec3d translation = m_view_matrix.translation() + m_view_rotation * m_target;
+    m_view_rotation = Eigen::Quaterniond(rotation.matrix().template block<3, 3>(0, 0));
+    m_view_rotation.normalize();
+    m_view_matrix.fromPositionOrientationScale(m_view_rotation * (-m_target) + translation, m_view_rotation, Vec3d(1., 1., 1.));
+    update_zenit();
+}
+
 std::pair<double, double> Camera::calc_tight_frustrum_zs_around(const BoundingBoxf3& box)
 {
     std::pair<double, double> ret;
     auto& [near_z, far_z] = ret;
-
-    set_distance(DefaultDistance);
 
     // box in eye space
     const BoundingBoxf3 eye_box = box.transformed(m_view_matrix);
@@ -398,6 +456,15 @@ std::pair<double, double> Camera::calc_tight_frustrum_zs_around(const BoundingBo
         near_z += delta;
         far_z += delta;
     }
+// The following is commented out because it causes flickering of the 3D scene GUI
+// when the bounding box of the scene gets large enough
+// We need to introduce some smarter code to move the camera back and forth in such case
+//    else if (near_z > 2.0 * FrustrumMinNearZ && m_distance > DefaultDistance) {
+//        float delta = m_distance - DefaultDistance;
+//        set_distance(DefaultDistance);
+//        near_z -= delta;
+//        far_z -= delta;
+//    }
 
     return ret;
 }
@@ -522,7 +589,22 @@ void Camera::set_distance(double distance)
     if (m_distance != distance) {
         m_view_matrix.translate((distance - m_distance) * get_dir_forward());
         m_distance = distance;
+        
+        update_target();
     }
+}
+
+void Camera::load_camera_view(Camera& cam)
+{
+    m_target = cam.get_target();
+    m_zoom = cam.get_zoom();
+    m_scene_box = cam.get_scene_box();
+    m_viewport = cam.get_viewport();
+    m_view_matrix = cam.get_view_matrix();
+    m_projection_matrix = cam.get_projection_matrix();
+    m_view_rotation = cam.get_view_rotation();
+    m_frustrum_zs = cam.get_z_range();
+    m_zenit = cam.get_zenit();
 }
 
 void Camera::look_at(const Vec3d& position, const Vec3d& target, const Vec3d& up)
@@ -579,7 +661,8 @@ Vec3d Camera::validate_target(const Vec3d& target) const
     BoundingBoxf3 test_box = m_scene_box;
     test_box.translate(-m_scene_box.center());
     // We may let this factor be customizable
-    static const double ScaleFactor = 1.5;
+    //BBS enlarge scene box factor
+    static const double ScaleFactor = 3.0;
     test_box.scale(ScaleFactor);
     test_box.translate(m_scene_box.center());
 
@@ -593,6 +676,12 @@ void Camera::update_zenit()
     m_zenit = Geometry::rad2deg(0.5 * M_PI - std::acos(std::clamp(-get_dir_forward().dot(Vec3d::UnitZ()), -1.0, 1.0)));
 }
 
+void Camera::update_target() {
+    Vec3d temptarget = get_position() + m_distance * get_dir_forward();
+    if (!(temptarget-m_target).isApprox(Vec3d::Zero())){
+        m_target = temptarget;
+    } 
+}
 } // GUI
 } // Slic3r
 

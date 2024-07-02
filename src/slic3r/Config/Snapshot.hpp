@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2022 Lukáš Matěna @lukasmatena, Vojtěch Bubník @bubnikv, Vojtěch Král @vojtechkral
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_GUI_Snapshot_
 #define slic3r_GUI_Snapshot_
 
@@ -136,7 +132,7 @@ const Snapshot* take_config_snapshot_report_error(const AppConfig &app_config, S
 
 // Take snapshot on SnapshotDB::singleton(). If taking snapshot fails, report "message", and present a "Continue" or "Abort" buttons to respond.
 // Return true on success and on "Continue" to continue with the process (for example installation of presets).
-bool take_config_snapshot_cancel_on_error(const AppConfig &app_config, Snapshot::Reason reason, const std::string &comment, const std::string &message, Snapshot const **psnapshot = nullptr);
+bool take_config_snapshot_cancel_on_error(const AppConfig &app_config, Snapshot::Reason reason, const std::string &comment, const std::string &message);
 
 } // namespace Config
 } // namespace GUI

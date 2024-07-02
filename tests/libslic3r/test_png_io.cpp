@@ -1,7 +1,4 @@
-#ifndef NOMINMAX
 #define NOMINMAX
-#endif
-
 #include <catch2/catch.hpp>
 
 #include <numeric>
@@ -12,9 +9,9 @@
 
 using namespace Slic3r;
 
-static sla::RasterGrayscaleAA create_raster(const sla::Resolution &res)
+static sla::RasterGrayscaleAA create_raster(const sla::RasterBase::Resolution &res)
 {
-    sla::PixelDim pixdim{1., 1.};
+    sla::RasterBase::PixelDim pixdim{1., 1.};
 
     auto bb = BoundingBox({0, 0}, {scaled(1.), scaled(1.)});
     sla::RasterBase::Trafo trafo;

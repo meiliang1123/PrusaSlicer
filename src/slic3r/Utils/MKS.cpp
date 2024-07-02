@@ -1,8 +1,3 @@
-///|/ Copyright (c) Prusa Research 2021 - 2023 Oleksandra Iushchenko @YuSanka, David Kocík @kocikdav, Vojtěch Bubník @bubnikv
-///|/ Copyright (c) 2020 Sergey Kovalev @RandoMan70
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "MKS.hpp"
 
 #include <algorithm>
@@ -29,8 +24,9 @@
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/MsgDialog.hpp"
-#include "slic3r/GUI/format.hpp"
 #include "Http.hpp"
+#include "SerialMessage.hpp"
+#include "SerialMessageType.hpp"
 
 namespace fs = boost::filesystem;
 namespace pt = boost::property_tree;
@@ -46,8 +42,8 @@ const char* MKS::get_name() const { return "MKS"; }
 bool MKS::test(wxString& msg) const
 {
 	Utils::TCPConsole console(m_host, m_console_port);
-
-	console.enqueue_cmd("M105");
+	Slic3r::Utils::SerialMessage s("M105", Slic3r::Utils::Command);
+	console.enqueue_cmd(s);
 	bool ret = console.run_queue();
 
 	if (!ret)
@@ -63,7 +59,9 @@ wxString MKS::get_test_ok_msg() const
 
 wxString MKS::get_test_failed_msg(wxString& msg) const
 {
-	return GUI::format_wxstr("%s: %s", _L("Could not connect to MKS"), msg);
+	return GUI::from_u8((boost::format("%s: %s")
+		% _utf8(L("Could not connect to MKS"))
+		% std::string(msg.ToUTF8())).str());
 }
 
 bool MKS::upload(PrintHostUpload upload_data, ProgressFn prorgess_fn, ErrorFn error_fn, InfoFn info_fn) const
@@ -130,9 +128,10 @@ bool MKS::start_print(wxString& msg, const std::string& filename) const
 	std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 
 	Utils::TCPConsole console(m_host, m_console_port);
-
-	console.enqueue_cmd(std::string("M23 ") + filename);
-	console.enqueue_cmd("M24");
+	Slic3r::Utils::SerialMessage s(std::string("M23 ") + filename, Slic3r::Utils::Command);
+	console.enqueue_cmd(s);
+	s.message = "M24";
+	console.enqueue_cmd(s);
 
 	bool ret = console.run_queue();
 

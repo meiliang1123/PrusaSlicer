@@ -3,11 +3,13 @@
 
 #include <wx/colour.h>
 
+#include <map>
+
 class StateColor
 {
 public:
     enum State {
-        Normal = 0, 
+        Normal = 0,
         Enabled = 1,
         Checked = 2,
         Focused = 4,
@@ -19,6 +21,20 @@ public:
         NotHovered = 8 << 16,
         NotPressed = 16 << 16,
     };
+
+public:
+    static std::tuple<double, double, double> GetLAB(const wxColour& color);
+    static double GetLightness(const wxColour& color);
+    static wxColour SetLightness(const wxColour& color, double lightness);
+    static wxColour LightenDarkenColor(const wxColour& color, int amount);
+    static double GetColorDifference(const wxColour& c1, const wxColour& c2);
+    static double LAB_Delta_E(const wxColour& c1, const wxColour& c2);
+
+    static void SetDarkMode(bool dark);
+
+    static std::map<wxColour, wxColour> const & GetDarkMap();
+    static wxColour darkModeColorFor(wxColour const &color);
+    static wxColour lightModeColorFor(wxColour const &color);
 
 public:
     template<typename ...Colors>
@@ -53,6 +69,8 @@ public:
     wxColour defaultColor();
 
     wxColour colorForStates(int states);
+
+    wxColour colorForStatesNoDark(int states);
 
     int colorIndexForStates(int states);
 

@@ -1,8 +1,3 @@
-///|/ Copyright (c) 2022 Denis Itskovich @denis-itskovich
-///|/ Copyright (c) Prusa Research 2019 - 2021 Enrico Turri @enricoturri1966, Lukáš Matěna @lukasmatena, Roman Beránek @zavorka, Vojtěch Bubník @bubnikv, Oleksandra Iushchenko @YuSanka, David Kocík @kocikdav, Vojtěch Král @vojtechkral
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/PresetBundle.hpp"
 #include "Mouse3DController.hpp"
@@ -22,7 +17,9 @@
 #include <bitset>
 
 //unofficial linux lib
-//#include <spnav.h>
+#ifdef HAVE_SPNAV
+#include <spnav.h>
+#endif
 
 // WARN: If updating these lists, please also update resources/udev/90-3dconnexion.rules
 
@@ -149,11 +146,13 @@ static std::string format_device_string(int vid, int pid)
 static std::string detect_attached_device()
 {
     std::string ret;
-
     // Initialize the hidapi library
     int res = hid_init();
     if (res != 0)
         BOOST_LOG_TRIVIAL(error) << "Unable to initialize hidapi library";
+    else if (wxGetApp().app_config->get("skip_3dmouse_detect") == "true") {
+        BOOST_LOG_TRIVIAL(info) << "do not detect 3d Mouse";
+    }
     else {
         // Enumerates devices
         hid_device_info* devices = hid_enumerate(0, 0);
@@ -325,6 +324,13 @@ bool Mouse3DController::State::apply(const Mouse3DController::Params &params, Ca
     if (! wxGetApp().IsActive())
         return false;
 
+    int xmult = params.invert_x ? -1 : 1;
+    int ymult = params.invert_y ? -1 : 1;
+    int zmult = params.invert_z ? -1 : 1;
+    int yawmult = params.invert_yaw ? -1 : 1;
+    int pitchmult = params.invert_pitch ? -1 : 1;
+    int rollmult = params.invert_roll ? -1 : 1;
+
     std::deque<QueueItem> input_queue;
     {
     	// Atomically move m_input_queue to input_queue.
@@ -335,7 +341,7 @@ bool Mouse3DController::State::apply(const Mouse3DController::Params &params, Ca
 
     for (const QueueItem &input_queue_item : input_queue) {
     	if (input_queue_item.is_translation()) {
-            Vec3d translation = params.swap_yz ? Vec3d(input_queue_item.vector.x(), - input_queue_item.vector.z(), input_queue_item.vector.y()) : input_queue_item.vector;
+            Vec3d translation = params.swap_yz ? Vec3d(input_queue_item.vector.x() * xmult, - input_queue_item.vector.z() * zmult, input_queue_item.vector.y() * ymult) : Vec3d(input_queue_item.vector.x() * xmult, input_queue_item.vector.y() * ymult, input_queue_item.vector.z() * zmult);
             double zoom_factor = camera.min_zoom() / camera.get_zoom();
 	        camera.set_target(camera.get_target() + zoom_factor * params.translation.scale * (translation.x() * camera.get_dir_right() + translation.z() * camera.get_dir_up()));
             if (translation.y() != 0.0)
@@ -344,6 +350,7 @@ bool Mouse3DController::State::apply(const Mouse3DController::Params &params, Ca
             Vec3d rot = params.rotation.scale * input_queue_item.vector * (PI / 180.);
             if (params.swap_yz)
                 rot = Vec3d(rot.x(), -rot.z(), rot.y());
+            rot = Vec3d(rot.x() * pitchmult, rot.y() * yawmult, rot.z() * rollmult);
             camera.rotate_local_around_target(Vec3d(rot.x(), - rot.z(), rot.y()));
 	    } else {
 	    	assert(input_queue_item.is_buttons());
@@ -372,12 +379,24 @@ void Mouse3DController::load_config(const AppConfig &appconfig)
 	    float  rotation_deadzone 	= Params::DefaultRotationDeadzone;
 	    double zoom_speed 			= 2.0;
         bool   swap_yz              = false;
+        bool   invert_x             = false;
+        bool   invert_y             = false;
+        bool   invert_z             = false;
+        bool   invert_yaw           = false;
+        bool   invert_pitch         = false;
+        bool   invert_roll          = false;
         appconfig.get_mouse_device_translation_speed(device_name, translation_speed);
 	    appconfig.get_mouse_device_translation_deadzone(device_name, translation_deadzone);
 	    appconfig.get_mouse_device_rotation_speed(device_name, rotation_speed);
 	    appconfig.get_mouse_device_rotation_deadzone(device_name, rotation_deadzone);
 	    appconfig.get_mouse_device_zoom_speed(device_name, zoom_speed);
         appconfig.get_mouse_device_swap_yz(device_name, swap_yz);
+        appconfig.get_mouse_device_invert_x(device_name, invert_x);
+        appconfig.get_mouse_device_invert_y(device_name, invert_y);
+        appconfig.get_mouse_device_invert_z(device_name, invert_z);
+        appconfig.get_mouse_device_invert_yaw(device_name, invert_yaw);
+        appconfig.get_mouse_device_invert_pitch(device_name, invert_pitch);
+        appconfig.get_mouse_device_invert_roll(device_name, invert_roll);
         // clamp to valid values
 	    Params params;
 	    params.translation.scale = Params::DefaultTranslationScale * std::clamp(translation_speed, Params::MinTranslationScale, Params::MaxTranslationScale);
@@ -386,6 +405,12 @@ void Mouse3DController::load_config(const AppConfig &appconfig)
 	    params.rotation.deadzone = std::clamp(rotation_deadzone, 0.0f, Params::MaxRotationDeadzone);
 	    params.zoom.scale = Params::DefaultZoomScale * std::clamp(zoom_speed, 0.1, 10.0);
         params.swap_yz = swap_yz;
+        params.invert_x = invert_x;
+        params.invert_y = invert_x;
+        params.invert_z = invert_x;
+        params.invert_yaw = invert_yaw;
+        params.invert_pitch = invert_pitch;
+        params.invert_roll = invert_roll;
         m_params_by_device[device_name] = std::move(params);
 	}
 }
@@ -401,7 +426,8 @@ void Mouse3DController::save_config(AppConfig &appconfig) const
 		const Params      &params      = key_value_pair.second;
 	    // Store current device parameters into the config
         appconfig.set_mouse_device(device_name, params.translation.scale / Params::DefaultTranslationScale, params.translation.deadzone,
-            params.rotation.scale / Params::DefaultRotationScale, params.rotation.deadzone, params.zoom.scale / Params::DefaultZoomScale, params.swap_yz);
+            params.rotation.scale / Params::DefaultRotationScale, params.rotation.deadzone, params.zoom.scale / Params::DefaultZoomScale,
+            params.swap_yz, params.invert_x, params.invert_y, params.invert_z, params.invert_yaw, params.invert_pitch, params.invert_roll);
     }
 }
 
@@ -451,11 +477,26 @@ void Mouse3DController::render_settings_dialog(GLCanvas3D& canvas) const
     Size cnv_size = canvas.get_canvas_size();
 
     ImGuiWrapper& imgui = *wxGetApp().imgui();
-    ImGuiPureWrap::set_next_window_pos(0.5f * (float)cnv_size.get_width(), 0.5f * (float)cnv_size.get_height(), ImGuiCond_Always, 0.5f, 0.5f);
+    imgui.set_next_window_pos(0.5f * (float)cnv_size.get_width(), 0.5f * (float)cnv_size.get_height(), ImGuiCond_Always, 0.5f, 0.5f);
 
+    float space_size = imgui.get_style_scaling() * 8;
+
+    float speed_size = imgui.calc_text_size(_L("Speed:")).x + imgui.scaled(1.5f);
+    float dead_size = imgui.calc_text_size(_L("Deadzone:")).x + imgui.scaled(1.5f);
+    float option_size = imgui.calc_text_size(_L("Options:")).x + imgui.scaled(1.5f);
+    float max_left_size = std::max(speed_size,std::max(dead_size,option_size)) + space_size;
+
+    float trans_size = imgui.calc_text_size(_L("Translate")).x + space_size;
+    float zoom_size = imgui.calc_text_size(_L("Zoom")).x + space_size;
+    float rota_size = imgui.calc_text_size(_L("Rotation")).x + space_size;
+    float trasn_zoom_size = imgui.calc_text_size(_L("Translation/Zoom")).x + space_size;
+    float max_slider_txt_size = std::max(std::max(trans_size,zoom_size),std::max(rota_size,trasn_zoom_size));
+
+    ImGuiWrapper::push_toolbar_style(wxGetApp().plater()->canvas3D()->get_scale());
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 20.0f));
     static ImVec2 last_win_size(0.0f, 0.0f);
     bool shown = true;
-    if (ImGuiPureWrap::begin(_u8L("3Dconnexion settings"), &shown, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse)) {
+    if (imgui.begin(_L("3Dconnexion settings"), &shown, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse || ImGuiWindowFlags_NoTitleBar)) {
         if (shown) {
             ImVec2 win_size = ImGui::GetWindowSize();
             if (last_win_size.x != win_size.x || last_win_size.y != win_size.y) {
@@ -465,67 +506,168 @@ void Mouse3DController::render_settings_dialog(GLCanvas3D& canvas) const
                 canvas.request_extra_frame();
             }
 
-            const ImVec4& color = ImGui::GetStyleColorVec4(ImGuiCol_Separator);
-            ImGuiPureWrap::text_colored(color, _u8L("Device:"));
+            const ImVec4& color = ImVec4(0.56f, 0.56f, 0.56f, 1.00f);
+            /*imgui.text(_L("Device:"));
             ImGui::SameLine();
-            ImGuiPureWrap::text(m_device_str);
+            imgui.text(m_device_str);*/
+            ImGui::AlignTextToFramePadding();
+            imgui.text_colored(color,_L("Speed:"));
+            ImGui::SameLine(max_left_size + max_slider_txt_size - trans_size);
+            imgui.text(_L("Translate"));
+            ImGui::SameLine(max_left_size + max_slider_txt_size);
 
-            ImGui::Separator();
-            ImGuiPureWrap::text_colored(color, _u8L("Speed:"));
-
+            ImGui::PushItemWidth(imgui.scaled(6.0f));
             float translation_scale = float(params_copy.translation.scale) / float(Params::DefaultTranslationScale);
-            if (imgui.slider_float(_L("Translation"), &translation_scale, float(Params::MinTranslationScale), float(Params::MaxTranslationScale), "%.1f")) {
+            bool b_translation = imgui.bbl_slider_float_style("##Translate", &translation_scale, float(Params::MinTranslationScale), float(Params::MaxTranslationScale), "%.1f");
+            ImGui::SameLine();
+            ImGui::PushItemWidth(imgui.scaled(3.0f));
+            bool b_translation_dragfloat = ImGui::BBLDragFloat("##Translate_input", &translation_scale, float(Params::MinTranslationScale), float(Params::MaxTranslationScale),0.0, "%.1f");
+            if (b_translation || b_translation_dragfloat) {
                 params_copy.translation.scale = Params::DefaultTranslationScale * double(translation_scale);
             	params_changed = true;
             }
+            ImGui::SameLine();
+            ImGui::Dummy({space_size, 0.0});
 
+            ImGui::Dummy({0.0, 0.0});
+            ImGui::SameLine(max_left_size + max_slider_txt_size - rota_size);
+            ImGui::AlignTextToFramePadding();
+            imgui.text(_L("Rotation"));
+            ImGui::SameLine(max_left_size + max_slider_txt_size);
+            ImGui::PushItemWidth(imgui.scaled(6.0f));
             float rotation_scale = params_copy.rotation.scale / Params::DefaultRotationScale;
-            if (imgui.slider_float(_L("Rotation") + "##1", &rotation_scale, 0.1f, 10.0f, "%.1f")) {
+            bool  b_rotation1     = imgui.bbl_slider_float_style("##Rotation1", &rotation_scale, 0.1f, 10.0f, "%.1f");
+            ImGui::SameLine();
+            ImGui::PushItemWidth(imgui.scaled(3.0f));
+            bool b_rotation1_dragfloat = ImGui::BBLDragFloat("##Rotation1_input", &rotation_scale, 0.1f, 10.0f, 0.0, "%.1f");
+            if (b_rotation1 || b_rotation1_dragfloat) {
             	params_copy.rotation.scale = Params::DefaultRotationScale * rotation_scale;
             	params_changed = true;
             }
+            ImGui::SameLine();
+            ImGui::Dummy({space_size, 0.0});
 
+            ImGui::Dummy({0.0, 0.0});
+            ImGui::SameLine(max_left_size + max_slider_txt_size - zoom_size);
+            ImGui::AlignTextToFramePadding();
+            imgui.text(_L("Zoom"));
+            ImGui::SameLine(max_left_size + max_slider_txt_size);
+            ImGui::PushItemWidth(imgui.scaled(6.0f));
             float zoom_scale = params_copy.zoom.scale / Params::DefaultZoomScale;
-            if (imgui.slider_float(_L("Zoom"), &zoom_scale, 0.1f, 10.0f, "%.1f")) {
+            bool  b_zoom = imgui.bbl_slider_float_style("##Zoom", &zoom_scale, 0.1f, 10.0f, "%.1f");
+            ImGui::SameLine();
+            ImGui::PushItemWidth(imgui.scaled(3.0f));
+            bool b_zoom_dragfloat = ImGui::BBLDragFloat("##Zoom_input", &zoom_scale, 0.1f, 10.0f, 0.0, "%.1f");
+            if (b_zoom || b_zoom_dragfloat) {
             	params_copy.zoom.scale = Params::DefaultZoomScale * zoom_scale;
             	params_changed = true;
             }
 
             ImGui::Separator();
-            ImGuiPureWrap::text_colored(color, _u8L("Deadzone:"));
+            ImGui::AlignTextToFramePadding();
+            imgui.text_colored(color,_L("Deadzone:"));
+            ImGui::SameLine(max_left_size + max_slider_txt_size - trasn_zoom_size);
+            imgui.text(_L("Translation/Zoom"));
+            ImGui::SameLine(max_left_size + max_slider_txt_size);
 
-            float translation_deadzone = (float)params_copy.translation.deadzone;
-            if (imgui.slider_float(_L("Translation") + "/" + _L("Zoom"), &translation_deadzone, 0.0f, (float)Params::MaxTranslationDeadzone, "%.2f")) {
-            	params_copy.translation.deadzone = (double)translation_deadzone;
-            	params_changed = true;
+            ImGui::PushItemWidth(imgui.scaled(6.0f));
+            float translation_deadzone = (float) params_copy.translation.deadzone;
+            bool  b_tran_zoom = imgui.bbl_slider_float_style("##Translation/Zoom", &translation_deadzone, 0.0f, (float) Params::MaxTranslationDeadzone, "%.2f");
+            ImGui::SameLine();
+            ImGui::PushItemWidth(imgui.scaled(3.0f));
+            bool b_tran_zoom_dragfloat = ImGui::BBLDragFloat("##Translation/Zoom_input", &translation_deadzone, 0.0f, (float) Params::MaxTranslationDeadzone, 0.0, "%.1f");
+            if (b_tran_zoom || b_tran_zoom_dragfloat) {
+                params_copy.translation.deadzone = (double) translation_deadzone;
+                params_changed = true;
             }
+            ImGui::SameLine();
+            ImGui::Dummy({space_size, 0.0});
 
+            ImGui::Dummy({0.0, 0.0});
+            ImGui::SameLine(max_left_size + max_slider_txt_size - rota_size);
+            ImGui::AlignTextToFramePadding();
+            imgui.text(_L("Rotation"));
+            ImGui::SameLine(max_left_size + max_slider_txt_size);
+            ImGui::PushItemWidth(imgui.scaled(6.0f));
             float rotation_deadzone = params_copy.rotation.deadzone;
-            if (imgui.slider_float(_L("Rotation") + "##2", &rotation_deadzone, 0.0f, Params::MaxRotationDeadzone, "%.2f")) {
-            	params_copy.rotation.deadzone = rotation_deadzone;
-            	params_changed = true;
+            bool  b_rotation2 = imgui.bbl_slider_float_style("##Rotation2", &rotation_deadzone, 0.0f, Params::MaxRotationDeadzone, "%.2f");
+            ImGui::SameLine();
+            ImGui::PushItemWidth(imgui.scaled(3.0f));
+            bool b_rotation2_dragfloat = ImGui::BBLDragFloat("##Rotation2_input", &rotation_deadzone, 0.0f, Params::MaxRotationDeadzone, 0.0, "%.1f");
+            if (b_rotation2 || b_rotation2_dragfloat) {
+                params_copy.rotation.deadzone = rotation_deadzone;
+                params_changed = true;
             }
+            ImGui::SameLine();
+            ImGui::Dummy({space_size, 0.0});
+            ImGui::PopItemWidth();
 
             ImGui::Separator();
-            ImGuiPureWrap::text_colored(color, _u8L("Options:"));
+            ImGui::AlignTextToFramePadding();
+            imgui.text_colored(color,_L("Options:"));
+            ImGui::SameLine(max_left_size + max_slider_txt_size - imgui.get_slider_icon_size().x + + space_size);
 
             bool swap_yz = params_copy.swap_yz;
-            if (ImGuiPureWrap::checkbox(_u8L("Swap Y/Z axes"), swap_yz)) {
+            if (imgui.bbl_checkbox(_L("Swap Y/Z axes"), swap_yz)) {
                 params_copy.swap_yz = swap_yz;
                 params_changed = true;
             }
+            ImGui::Dummy({0.0, 0.0});
+            ImGui::SameLine(max_left_size + max_slider_txt_size - imgui.get_slider_icon_size().x + + space_size);
+            bool invert_x = params_copy.invert_x;
+            if (imgui.bbl_checkbox(_L("Invert X axis"), invert_x)) {
+                params_copy.invert_x = invert_x;
+                params_changed = true;
+            }
+            ImGui::Dummy({0.0, 0.0});
+            ImGui::SameLine(max_left_size + max_slider_txt_size - imgui.get_slider_icon_size().x + + space_size);
+            bool invert_y = params_copy.invert_y;
+            if (imgui.bbl_checkbox(_L("Invert Y axis"), invert_y)) {
+                params_copy.invert_y = invert_y;
+                params_changed = true;
+            }
+            ImGui::Dummy({0.0, 0.0});
+            ImGui::SameLine(max_left_size + max_slider_txt_size - imgui.get_slider_icon_size().x + + space_size);
+            bool invert_z = params_copy.invert_z;
+            if (imgui.bbl_checkbox(_L("Invert Z axis"), invert_z)) {
+                params_copy.invert_z = invert_z;
+                params_changed = true;
+            }
+            ImGui::Dummy({0.0, 0.0});
+            ImGui::SameLine(max_left_size + max_slider_txt_size - imgui.get_slider_icon_size().x + + space_size);
+            bool invert_yaw = params_copy.invert_yaw;
+            if (imgui.bbl_checkbox(_L("Invert Yaw axis"), invert_yaw)) {
+                params_copy.invert_yaw = invert_yaw;
+                params_changed = true;
+            }
+            ImGui::Dummy({0.0, 0.0});
+            ImGui::SameLine(max_left_size + max_slider_txt_size - imgui.get_slider_icon_size().x + + space_size);
+            bool invert_pitch = params_copy.invert_pitch;
+            if (imgui.bbl_checkbox(_L("Invert Pitch axis"), invert_pitch)) {
+                params_copy.invert_pitch = invert_pitch;
+                params_changed = true;
+            }
+            ImGui::Dummy({0.0, 0.0});
+            ImGui::SameLine(max_left_size + max_slider_txt_size - imgui.get_slider_icon_size().x + + space_size);
+            bool invert_roll = params_copy.invert_roll;
+            if (imgui.bbl_checkbox(_L("Invert Roll axis"), invert_roll)) {
+                params_copy.invert_roll = invert_roll;
+                params_changed = true;
+            }
+            ImGui::Dummy({0.0, 0.0});
+            ImGui::SameLine(max_left_size + max_slider_txt_size - imgui.get_slider_icon_size().x + + space_size);
 
 #if ENABLE_3DCONNEXION_DEVICES_DEBUG_OUTPUT
             ImGui::Separator();
             ImGui::Separator();
-            ImGuiPureWrap::text_colored(color, "DEBUG:");
-            ImGuiPureWrap::text_colored(color, "Vectors:");
+            imgui.text_colored(color, "DEBUG:");
+            imgui.text_colored(color, "Vectors:");
             Vec3f translation = m_state.get_first_vector_of_type(State::QueueItem::TranslationType).cast<float>();
             Vec3f rotation = m_state.get_first_vector_of_type(State::QueueItem::RotationType).cast<float>();
             ImGui::InputFloat3("Translation##2", translation.data(), "%.3f", ImGuiInputTextFlags_ReadOnly);
             ImGui::InputFloat3("Rotation##3", rotation.data(), "%.3f", ImGuiInputTextFlags_ReadOnly);
 
-            ImGuiPureWrap::text_colored(color, "Queue size:");
+            imgui.text_colored(color, "Queue size:");
 
             int input_queue_size_current[2] = { int(m_state.input_queue_size_current()), int(m_state.input_queue_max_size_achieved) };
             ImGui::InputInt2("Current", input_queue_size_current, ImGuiInputTextFlags_ReadOnly);
@@ -539,13 +681,16 @@ void Mouse3DController::render_settings_dialog(GLCanvas3D& canvas) const
             }
 
             ImGui::Separator();
-            ImGuiPureWrap::text_colored(color, "Camera:");
+            imgui.text_colored(color, "Camera:");
             Vec3f target = wxGetApp().plater()->get_camera().get_target().cast<float>();
             ImGui::InputFloat3("Target", target.data(), "%.3f", ImGuiInputTextFlags_ReadOnly);
 #endif // ENABLE_3DCONNEXION_DEVICES_DEBUG_OUTPUT
 
             ImGui::Separator();
-            if (ImGuiPureWrap::button(_u8L("Close"))) {
+            float window_width = ImGui::GetWindowWidth();
+            ImGui::Dummy({0.0, 0.0});
+            ImGui::SameLine((window_width - imgui.calc_text_size(_L("Close")).x)/2);
+            if (imgui.button(_L("Close"))) {
                 // the user clicked on the [Close] button
                 m_settings_dialog_closed_by_user = true;
                 canvas.set_as_dirty();
@@ -558,8 +703,9 @@ void Mouse3DController::render_settings_dialog(GLCanvas3D& canvas) const
         }
     }
 
-    ImGuiPureWrap::end();
-
+    imgui.end();
+    ImGui::PopStyleVar(1);
+    ImGuiWrapper::pop_toolbar_style();
     if (params_changed) {
         // Synchronize front end parameters to back end.
     	std::scoped_lock<std::mutex> lock(m_params_ui_mutex);
@@ -673,11 +819,6 @@ void Mouse3DController::init()
 #ifndef _WIN32
     	// Don't start the background thread on Windows, as the HID messages are sent as Windows messages.
 	    m_thread = std::thread(&Mouse3DController::run, this);
-#else
-        // For some reason, HID message routing does not work well with remote session. Requires further investigation
-        if (::GetSystemMetrics(SM_REMOTESESSION)) {
-            m_thread = std::thread(&Mouse3DController::run, this);
-        }
 #endif // _WIN32
 	}
 }
@@ -707,6 +848,38 @@ void Mouse3DController::shutdown()
 // Main routine of the worker thread.
 void Mouse3DController::run()
 {
+#ifdef HAVE_SPNAV
+    if (spnav_open() == -1) {
+        // Give up.
+        BOOST_LOG_TRIVIAL(error) << "Unable to open connection to spacenavd";
+        return;
+    }
+    m_connected = true;
+    m_device_str = "spacenavd";
+    if (auto it_params = m_params_by_device.find(m_device_str); it_params != m_params_by_device.end()) {
+        std::scoped_lock<std::mutex> lock(m_params_ui_mutex);
+        m_params = m_params_ui = it_params->second;
+    } else {
+        m_params = m_params_ui = m_params_by_device[m_device_str] = Params();
+    }
+
+    for (;;) {
+        {
+            std::scoped_lock lock(m_params_ui_mutex);
+            if (m_stop)
+                break;
+            if (m_params_ui_changed) {
+                m_params = m_params_by_device[m_device_str] = m_params_ui;
+                m_params_ui_changed = false;
+            }
+        }
+        this->collect_input();
+    }
+
+    m_connected = false;
+    // Finalize the spnav library
+    spnav_close();
+#else
     // Initialize the hidapi library
     int res = hid_init();
     if (res != 0) {
@@ -751,11 +924,12 @@ void Mouse3DController::run()
 
     // Finalize the hidapi library
     hid_exit();
+#endif
 }
 
 bool Mouse3DController::connect_device()
 {
-    if (m_stop)
+    if (m_stop || wxGetApp().app_config->get("skip_3dmouse_detect") == "true")
     	return false;
 
     {
@@ -976,12 +1150,12 @@ bool Mouse3DController::connect_device()
     if (m_device != nullptr) {
         wchar_t buffer[1024];
         hid_get_manufacturer_string(m_device, buffer, 1024);
-        m_device_str = into_u8(buffer);
+        m_device_str = boost::nowide::narrow(buffer);
         // #3479 seems to show that sometimes an extra whitespace is added, so we remove it
         boost::algorithm::trim(m_device_str);
 
         hid_get_product_string(m_device, buffer, 1024);
-        m_device_str += "/" + into_u8(buffer);
+        m_device_str += "/" + boost::nowide::narrow(buffer);
         // #3479 seems to show that sometimes an extra whitespace is added, so we remove it
         boost::algorithm::trim(m_device_str);
 
@@ -1040,8 +1214,51 @@ void Mouse3DController::disconnect_device()
     }
 }
 
+#ifdef HAVE_SPNAV
+// Convert a signed 16bit word from a 3DConnexion mouse HID packet into a double coordinate, apply a dead zone.
+static double convert_spnav_input(int value)
+{
+    return (double)value/100;
+}
+#endif
+
 void Mouse3DController::collect_input()
 {
+#ifdef HAVE_SPNAV
+    // Read packet, block maximum 100 ms. That means when closing the application, closing the application will be delayed by 100 ms.
+    int fd = spnav_fd();
+
+    if (fd != -1) {
+        fd_set fds;
+        struct timeval tv = {.tv_sec = 0, .tv_usec = 100000};
+
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        if (select(fd + 1, &fds, NULL, NULL, &tv) == 1) {
+            spnav_event ev = {};
+            switch (spnav_poll_event(&ev)) {
+                case SPNAV_EVENT_MOTION: {
+                    Vec3d translation(-convert_spnav_input(ev.motion.x), convert_spnav_input(ev.motion.y), -convert_spnav_input(ev.motion.z));
+                    if (!translation.isApprox(Vec3d::Zero())) {
+                        m_state.append_translation(translation, m_params.input_queue_max_size);
+                    }
+                    Vec3f rotation(convert_spnav_input(ev.motion.rx), convert_spnav_input(ev.motion.ry), -convert_spnav_input(ev.motion.rz));
+                    if (!rotation.isApprox(Vec3f::Zero())) {
+                        m_state.append_rotation(rotation, m_params.input_queue_max_size);
+                    }
+                    break;
+                }
+                case SPNAV_EVENT_BUTTON:
+                    if (ev.button.press)
+                        m_state.append_button((unsigned int)ev.button.bnum, m_params.input_queue_max_size);
+                    break;
+            }
+            wxGetApp().plater()->set_current_canvas_as_dirty();
+            // ask for an idle event to update 3D scene
+            wxWakeUpIdle();
+        }
+    }
+#else
     DataPacketRaw packet = { 0 };
     // Read packet, block maximum 100 ms. That means when closing the application, closing the application will be delayed by 100 ms.
     int res = hid_read_timeout(m_device, packet.data(), packet.size(), 100);
@@ -1050,6 +1267,7 @@ void Mouse3DController::collect_input()
         this->disconnect_device();
     } else
 		this->handle_input(packet, res, m_params, m_state);
+#endif
 }
 
 #ifdef _WIN32

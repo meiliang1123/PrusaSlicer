@@ -9,10 +9,12 @@
 #include <functional>
 
 #include <libnest2d/geometry_traits.hpp>
+#define LARGE_COST_TO_REJECT 1e7
 
 namespace libnest2d {
 
-static const constexpr int BIN_ID_UNSET = -1;
+    static const constexpr int BIN_ID_UNSET = -1;
+    static const constexpr int BIN_ID_UNFIT = -1;
 
 /**
  * \brief An item to be placed on a bin.
@@ -67,12 +69,23 @@ class _Item {
         Box bb; bool valid;
         BBCache(): valid(false) {}
     } bb_cache_;
-    
+
     int binid_{BIN_ID_UNSET}, priority_{0};
     bool fixed_{false};
-    std::function<void(_Item&)> on_packed_;
 
 public:
+    int itemid_{ 0 };
+    std::vector<int> extrude_ids;
+    int filament_temp_type = -1; // -1 means unset. otherwise should be {0,1,2}
+    double height{ 0 };
+    double print_temp{ 0 };
+    double bed_temp{ 0 };
+    double vitrify_temp{ 0 };  // vitrify temperature
+    std::string name;
+    //BBS: virtual object to mark unprintable region on heatbed
+    bool is_virt_object{ false };
+    bool is_wipe_tower{ false };
+    bool has_tried_with_excluded{ false };
 
     /// The type of the shape which was handed over as the template argument.
     using ShapeType = RawShape;
@@ -128,7 +141,7 @@ public:
     inline _Item(TContour<RawShape>&& contour,
                  THolesContainer<RawShape>&& holes):
         sh_(sl::create<RawShape>(std::move(contour), std::move(holes))) {}
-    
+
     inline bool isFixed() const noexcept { return fixed_; }
     inline void markAsFixedInBin(int binid)
     {
@@ -138,10 +151,12 @@ public:
 
     inline void binId(int idx) { binid_ = idx; }
     inline int binId() const noexcept { return binid_; }
-    
+
     inline void priority(int p) { priority_ = p; }
     inline int priority() const noexcept { return priority_; }
 
+    inline void itemId(int idx) { itemid_ = idx; }
+    inline int itemId() const noexcept { return itemid_; }
     /**
      * @brief Convert the polygon to string representation. The format depends
      * on the implementation of the polygon.
@@ -204,23 +219,6 @@ public:
     {
         invalidateCache();
         sl::vertex(sh_, idx) = v;
-    }
-
-    void setShape(RawShape rsh)
-    {
-        sh_ = std::move(rsh);
-        invalidateCache();
-    }
-
-    void setOnPackedFn(std::function<void(_Item&)> onpackedfn)
-    {
-        on_packed_ = onpackedfn;
-    }
-
-    void onPacked()
-    {
-        if (on_packed_)
-            on_packed_(*this);
     }
 
     /**
@@ -306,18 +304,18 @@ public:
     {
         rotation(rotation() + rads);
     }
-    
+
     inline void inflation(Coord distance) BP2D_NOEXCEPT
     {
         inflation_ = distance;
         has_inflation_ = true;
         invalidateCache();
     }
-    
+
     inline Coord inflation() const BP2D_NOEXCEPT {
         return inflation_;
     }
-    
+
     inline void inflate(Coord distance) BP2D_NOEXCEPT
     {
         inflation(inflation() + distance);
@@ -638,7 +636,7 @@ public:
      * packed.
      */
     template<class Range = ConstItemRange<DefaultIterator>>
-    inline bool pack(
+    inline PackResult pack(
             Item& item,
             const Range& remaining = Range())
     {
@@ -666,16 +664,34 @@ public:
     /// Get the packed items.
     inline ItemGroup getItems() { return impl_.getItems(); }
 
+    inline int getPackedSize()
+    {
+        int  size  = 0;
+        auto items = getItems();
+        for (const auto &itm : items) {
+            if (itm.get().isFixed() == false) { size++; }
+        }
+        return size;
+    }
+
     /// Clear the packed items so a new session can be started.
     inline void clearItems() { impl_.clearItems(); }
 
+    inline void clearItems(const std::function<bool(const Item &itm)> &func) { impl_.clearItems(func); }
+
     inline double filledArea() const { return impl_.filledArea(); }
+
+    inline double score() const { return impl_.score(); }
+
+    inline void plateID(int id) { impl_.plateID(id); }
+    inline int plateID() { return impl_.plateID(); }
 
 };
 
 // The progress function will be called with the number of placed items
 using ProgressFunction = std::function<void(unsigned)>;
 using StopCondition = std::function<bool(void)>;
+using UnfitIndicator = std::function<void(std::string)>;
 
 /**
  * A wrapper interface (trait) class for any selections strategy provider.
@@ -709,6 +725,9 @@ public:
      * number of the remaining items to pack.
      */
     void progressIndicator(ProgressFunction fn) { impl_.progressIndicator(fn); }
+
+    //BBS
+    void unfitIndicator(UnfitIndicator fn) { impl_.unfitIndicator(fn); }
 
     void stopCondition(StopCondition cond) { impl_.stopCondition(cond); }
 
@@ -762,7 +781,7 @@ template<class PlacementStrategy, class SelectionStrategy >
 class _Nester {
     using TSel = SelectionStrategyLike<SelectionStrategy>;
     TSel selector_;
-    
+
 public:
     using Item = typename PlacementStrategy::Item;
     using ShapeType = typename Item::ShapeType;
@@ -787,7 +806,7 @@ private:
     StopCondition stopfn_;
 
     template<class It> using TVal = remove_ref_t<typename It::value_type>;
-    
+
     template<class It, class Out>
     using ItemIteratorOnly =
         enable_if_t<std::is_convertible<TVal<It>&, TPItem&>::value, Out>;
@@ -845,14 +864,14 @@ public:
         if(infl > 0) std::for_each(from, to, [infl](Item& item) {
             item.inflate(infl);
         });
-        
+
         selector_.template packItems<PlacementStrategy>(
             from, to, bin_, pconfig_);
-        
+
         if(min_obj_distance_ > 0) std::for_each(from, to, [infl](Item& item) {
             item.inflate(-infl);
         });
-        
+
         return selector_.getResult().size();
     }
 
@@ -860,6 +879,12 @@ public:
     inline _Nester& progressIndicator(ProgressFunction func)
     {
         selector_.progressIndicator(func); return *this;
+    }
+
+    /// BBS: Set unfit indicator function object for the selector.
+    inline _Nester& unfitIndicator(UnfitIndicator func)
+    {
+        selector_.unfitIndicator(func); return *this;
     }
 
     /// Set a predicate to tell when to abort nesting.

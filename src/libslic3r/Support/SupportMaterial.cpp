@@ -2,12 +2,6 @@
 ///|/ Copyright (c) SuperSlicer 2023 Remi Durand @supermerill
 ///|/ Copyright (c) 2016 Sakari Kapanen @Flannelhead
 ///|/
-///|/ ported from lib/Slic3r/Print/SupportMaterial.pm:
-///|/ Copyright (c) Prusa Research 2016 - 2017 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) 2016 Joseph Lenox @lordofhyphens
-///|/ Copyright (c) Slic3r 2013 - 2015 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2013 Mark Hindess
-///|/
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "../ClipperUtils.hpp"
@@ -78,7 +72,7 @@ namespace Slic3r {
 #define SUPPORT_SURFACES_OFFSET_PARAMETERS ClipperLib::jtSquare, 0.
 
 #ifdef SUPPORT_USE_AGG_RASTERIZER
-static std::vector<unsigned char> rasterize_polygons(const Vec2i &grid_size, const double pixel_size, const Point &left_bottom, const Polygons &polygons)
+static std::vector<unsigned char> rasterize_polygons(const Vec2i32 &grid_size, const double pixel_size, const Point &left_bottom, const Polygons &polygons)
 {
     std::vector<unsigned char>                  data(grid_size.x() * grid_size.y());
     agg::rendering_buffer                       rendering_buffer(data.data(), unsigned(grid_size.x()), unsigned(grid_size.y()), grid_size.x());
@@ -112,7 +106,7 @@ static std::vector<unsigned char> rasterize_polygons(const Vec2i &grid_size, con
     return data;
 }
 // Grid has to have the boundary pixels unset.
-static Polygons contours_simplified(const Vec2i &grid_size, const double pixel_size, Point left_bottom, const std::vector<unsigned char> &grid, coord_t offset, bool fill_holes)
+static Polygons contours_simplified(const Vec2i32 &grid_size, const double pixel_size, Point left_bottom, const std::vector<unsigned char> &grid, coord_t offset, bool fill_holes)
 {
     assert(std::abs(2 * offset) < pixel_size - 10);
 
@@ -459,14 +453,14 @@ Polygons collect_region_slices_by_type(const Layer &layer, SurfaceType surface_t
     // 1) Count the new polygons first.
     size_t n_polygons_new = 0;
     for (const LayerRegion *region : layer.regions())
-        for (const Surface &surface : region->slices())
+        for (const Surface &surface : region->slices.surfaces)
             if (surface.surface_type == surface_type)
                 n_polygons_new += surface.expolygon.holes.size() + 1;
     // 2) Collect the new polygons.
     Polygons out;
     out.reserve(n_polygons_new);
     for (const LayerRegion *region : layer.regions())
-        for (const Surface &surface : region->slices())
+        for (const Surface &surface : region->slices.surfaces)
             if (surface.surface_type == surface_type)
                 polygons_append(out, surface.expolygon);
     return out;
@@ -485,11 +479,12 @@ Polygons collect_slices_outer(const Layer &layer)
 
 struct SupportGridParams {
     SupportGridParams(const PrintObjectConfig &object_config, const Flow &support_material_flow) :
-        style(object_config.support_material_style.value),
-        grid_resolution(object_config.support_material_spacing.value + support_material_flow.spacing()),
-        support_angle(Geometry::deg2rad(object_config.support_material_angle.value)),
+        style(object_config.support_style.value),
+        grid_resolution(object_config.support_base_pattern_spacing.value + support_material_flow.spacing()),
+        support_angle(Geometry::deg2rad(object_config.support_angle.value)),
         extrusion_width(support_material_flow.spacing()),
-        support_material_closing_radius(object_config.support_material_closing_radius.value),
+        // support_material_closing_radius(object_config.support_material_closing_radius.value),
+        support_material_closing_radius(2.0),
         expansion_to_slice(coord_t(support_material_flow.scaled_spacing() / 2 + 5)),
         expansion_to_propagate(-3) {}
 
@@ -547,13 +542,13 @@ public:
             // Add one empty column / row boundaries.
             m_bbox.offset(m_pixel_size);
             // Grid size fitting the support polygons plus one pixel boundary around the polygons.
-            Vec2i grid_size_raw(int(ceil((m_bbox.max.x() - m_bbox.min.x()) / m_pixel_size)),
+            Vec2i32 grid_size_raw(int(ceil((m_bbox.max.x() - m_bbox.min.x()) / m_pixel_size)),
                                 int(ceil((m_bbox.max.y() - m_bbox.min.y()) / m_pixel_size)));
             // Overlay macro blocks of (oversampling x oversampling) over the grid.
-            Vec2i grid_blocks((grid_size_raw.x() + oversampling - 1 - 2) / oversampling, 
+            Vec2i32 grid_blocks((grid_size_raw.x() + oversampling - 1 - 2) / oversampling, 
                               (grid_size_raw.y() + oversampling - 1 - 2) / oversampling);
             // and resize the grid to fit the macro blocks + one pixel boundary.
-            m_grid_size = grid_blocks * oversampling + Vec2i(2, 2);
+            m_grid_size = grid_blocks * oversampling + Vec2i32(2, 2);
             assert(m_grid_size.x() >= grid_size_raw.x());
             assert(m_grid_size.y() >= grid_size_raw.y());
             m_grid2 = rasterize_polygons(m_grid_size, m_pixel_size, m_bbox.min, *m_support_polygons);
@@ -698,7 +693,12 @@ public:
                 polygons_rotate(out, m_support_angle);
             return out;
         }
-        case smsTree:
+        case smsTreeSlim:
+        case smsTreeStrong:
+        case smsTreeHybrid:
+
+        // Orca: use organic as default
+        case smsDefault:
         case smsOrganic:
 //            assert(false);
             [[fallthrough]];
@@ -837,7 +837,7 @@ private:
 
 #ifdef SUPPORT_USE_AGG_RASTERIZER
     // Dilate the trimming region (unmask the boundary pixels).
-    static std::vector<unsigned char> dilate_trimming_region(const std::vector<unsigned char> &trimming, const Vec2i &grid_size)
+    static std::vector<unsigned char> dilate_trimming_region(const std::vector<unsigned char> &trimming, const Vec2i32 &grid_size)
     {
         std::vector<unsigned char> dilated(trimming.size(), 0);
         for (int r = 1; r + 1 < grid_size.y(); ++ r)
@@ -858,7 +858,7 @@ private:
     }
 
     // Seed fill each of the (oversampling x oversampling) block up to the dilated trimming region.
-    static void seed_fill_block(std::vector<unsigned char> &grid, Vec2i grid_size, const std::vector<unsigned char> &trimming,const Vec2i &grid_blocks, int oversampling)
+    static void seed_fill_block(std::vector<unsigned char> &grid, Vec2i32 grid_size, const std::vector<unsigned char> &trimming,const Vec2i32 &grid_blocks, int oversampling)
     {
         int size      = oversampling;
         int stride    = grid_size.x();
@@ -968,7 +968,7 @@ private:
     coordf_t                m_support_material_closing_radius;
 
 #ifdef SUPPORT_USE_AGG_RASTERIZER
-    Vec2i                       m_grid_size;
+    Vec2i32                       m_grid_size;
     double                      m_pixel_size;
     BoundingBox                 m_bbox;
     std::vector<unsigned char>  m_grid2;
@@ -987,7 +987,7 @@ namespace SupportMaterialInternal {
     static inline bool has_bridging_perimeters(const ExtrusionLoop &loop)
     {
         for (const ExtrusionPath &ep : loop.paths)
-            if (ep.role() == ExtrusionRole::OverhangPerimeter && ! ep.polyline.empty())
+            if (ep.role() == ExtrusionRole::erOverhangPerimeter && ! ep.polyline.empty())
                 return int(ep.size()) >= (ep.is_closed() ? 3 : 2);
         return false;
     }
@@ -1013,7 +1013,7 @@ namespace SupportMaterialInternal {
             for (const ExtrusionEntity *ee2 : static_cast<const ExtrusionEntityCollection*>(ee)->entities) {
                 assert(! ee2->is_collection());
                 assert(! ee2->is_loop());
-                if (ee2->role() == ExtrusionRole::BridgeInfill)
+                if (ee2->role() == ExtrusionRole::erBridgeInfill)
                     return true;
             }
         }
@@ -1022,9 +1022,9 @@ namespace SupportMaterialInternal {
     static bool has_bridging_extrusions(const Layer &layer) 
     {
         for (const LayerRegion *region : layer.regions()) {
-            if (SupportMaterialInternal::has_bridging_perimeters(region->perimeters()))
+            if (SupportMaterialInternal::has_bridging_perimeters(region->perimeters))
                 return true;
-            if (region->fill_surfaces().has(stBottomBridge) && has_bridging_fills(region->fills()))
+            if (region->fill_surfaces.has(stBottomBridge) && has_bridging_fills(region->fills))
                 return true;
         }
         return false;
@@ -1034,8 +1034,8 @@ namespace SupportMaterialInternal {
     {
         assert(expansion_scaled >= 0.f);
         for (const ExtrusionPath &ep : loop.paths)
-            if (ep.role() == ExtrusionRole::OverhangPerimeter && ! ep.polyline.empty()) {
-                float exp = 0.5f * (float)scale_(ep.width()) + expansion_scaled;
+            if (ep.role() == ExtrusionRole::erOverhangPerimeter && ! ep.polyline.empty()) {
+                float exp = 0.5f * (float)scale_(ep.width) + expansion_scaled;
                 if (ep.is_closed()) {
                     if (ep.size() >= 3) {
                         // This is a complete loop.
@@ -1106,8 +1106,8 @@ struct SupportAnnotations
         buildplate_covered(buildplate_covered)
     {
         // Append custom supports.
-        object.project_and_append_custom_facets(false, TriangleStateType::ENFORCER, enforcers_layers);
-        object.project_and_append_custom_facets(false, TriangleStateType::BLOCKER, blockers_layers);
+        object.project_and_append_custom_facets(false, EnforcerBlockerType::ENFORCER, enforcers_layers);
+        object.project_and_append_custom_facets(false, EnforcerBlockerType::BLOCKER, blockers_layers);
     }
 
     std::vector<Polygons>         enforcers_layers;
@@ -1147,13 +1147,14 @@ static inline std::tuple<Polygons, Polygons, Polygons, float> detect_overhangs(
     // Enforcers projected to overhangs, trimmed
     Polygons enforcer_polygons;
 
-    const bool   support_auto    = object_config.support_material.value && object_config.support_material_auto.value;
+    const bool   support_auto    = object_config.enable_support.value && is_auto(object_config.support_type.value);
     const bool   buildplate_only = ! annotations.buildplate_covered.empty();
     // If user specified a custom angle threshold, convert it to radians.
     // Zero means automatic overhang detection.
-    const double threshold_rad   = (object_config.support_material_threshold.value > 0) ?
-        M_PI * double(object_config.support_material_threshold.value + 1) / 180. : // +1 makes the threshold inclusive
-        0.;
+    // +1 makes the threshold inclusive
+    double thresh_angle = object_config.support_threshold_angle.value > 0 ? object_config.support_threshold_angle.value + 1 : 0;
+    thresh_angle = std::min(thresh_angle, 89.); // BBS should be smaller than 90
+    const double threshold_rad   = Geometry::deg2rad(thresh_angle);
     float        no_interface_offset = 0.f;
 
     if (layer_id == 0) 
@@ -1205,7 +1206,7 @@ static inline std::tuple<Polygons, Polygons, Polygons, float> detect_overhangs(
             // It is the maximum widh of the extrudate.
             float fw = float(layerm->flow(frExternalPerimeter).scaled_width());
             lower_layer_offset  = 
-                (layer_id < (size_t)object_config.support_material_enforce_layers.value) ? 
+                (layer_id < (size_t)object_config.enforce_support_layers.value) ? 
                     // Enforce a full possible support, ignore the overhang angle.
                     0.f :
                 (threshold_rad > 0. ? 
@@ -1215,7 +1216,7 @@ static inline std::tuple<Polygons, Polygons, Polygons, float> detect_overhangs(
                     0.5f * fw);
             // Overhang polygons for this layer and region.
             Polygons diff_polygons;
-            Polygons layerm_polygons = to_polygons(layerm->slices().surfaces);
+            Polygons layerm_polygons = to_polygons(layerm->slices.surfaces);
             if (lower_layer_offset == 0.f) {
                 // Support everything.
                 diff_polygons = diff(layerm_polygons, lower_layer_polygons);
@@ -1284,9 +1285,9 @@ static inline std::tuple<Polygons, Polygons, Polygons, float> detect_overhangs(
             }
             #endif /* SLIC3R_DEBUG */
 
-            if (object_config.dont_support_bridges)
-                //FIXME Expensive, potentially not precise enough. Misses gap fill extrusions, which bridge.
-                remove_bridges_from_contacts(print_config, lower_layer, *layerm, fw, diff_polygons);
+            // if (object_config.dont_support_bridges)
+            //     //FIXME Expensive, potentially not precise enough. Misses gap fill extrusions, which bridge.
+            //     remove_bridges_from_contacts(print_config, lower_layer, *layerm, fw, diff_polygons);
 
             if (diff_polygons.empty())
                 continue;
@@ -1491,7 +1492,7 @@ static inline void fill_contact_layer(
 #endif // SLIC3R_DEBUG
         ));
     // 2) infill polygons, expand them by half the extrusion width + a tiny bit of extra.
-    bool reduce_interfaces = object_config.support_material_style.value == smsGrid && layer_id > 0 && !slicing_params.soluble_interface;
+    bool reduce_interfaces = object_config.support_style.value == smsGrid && layer_id > 0 && !slicing_params.soluble_interface;
     if (reduce_interfaces) {
         // Reduce the amount of dense interfaces: Do not generate dense interfaces below overhangs with 60% overhang of the extrusions.
         Polygons dense_interface_polygons = diff(overhang_polygons, lower_layer_polygons_for_dense_interface());
@@ -2509,10 +2510,10 @@ void PrintObjectSupportMaterial::trim_support_layers_by_object(
                                 break;
                             some_region_overlaps = true;
                             polygons_append(polygons_trimming, 
-                                offset(region->fill_surfaces().filter_by_type(stBottomBridge), gap_xy_scaled, SUPPORT_SURFACES_OFFSET_PARAMETERS));
-                            if (region->region().config().overhangs.value)
+                                offset(region->fill_surfaces.filter_by_type(stBottomBridge), gap_xy_scaled, SUPPORT_SURFACES_OFFSET_PARAMETERS));
+                            if (region->region().config().detect_overhang_wall.value)
                                 // Add bridging perimeters.
-                                SupportMaterialInternal::collect_bridging_perimeter_areas(region->perimeters(), gap_xy_scaled, polygons_trimming);
+                                SupportMaterialInternal::collect_bridging_perimeter_areas(region->perimeters, gap_xy_scaled, polygons_trimming);
                         }
                         if (! some_region_overlaps)
                             break;

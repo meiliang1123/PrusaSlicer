@@ -1,8 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2020 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/ Copyright (c) SuperSlicer 2018 Remi Durand @supermerill
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_FillGyroid_hpp_
 #define slic3r_FillGyroid_hpp_
 
@@ -20,7 +15,6 @@ public:
 
     // require bridge flow since most of this pattern hangs in air
     bool use_bridge_flow() const override { return false; }
-    bool is_self_crossing() override { return false; }
 
     // Correction applied to regular infill angle to maximize printing
     // speed in default configuration (degrees)

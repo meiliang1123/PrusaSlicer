@@ -9,6 +9,8 @@
 #include <exception>
 #include <future>
 
+#include <wx/window.h>
+
 #include "libslic3r/libslic3r.h"
 #include "ProgressIndicator.hpp"
 
@@ -18,6 +20,11 @@ namespace Slic3r { namespace GUI {
 // the main thread. Running it is up to a Worker object (see Worker interface)
 class Job {
 public:
+
+    enum JobPrepareState {
+        PREPARE_STATE_DEFAULT = 0,
+        PREPARE_STATE_MENU = 1,
+    };
 
     // A controller interface that informs the job about cancellation and
     // makes it possible for the job to advertise its status.
@@ -30,6 +37,10 @@ public:
 
         // Returns true if the job was asked to cancel itself.
         virtual bool was_canceled() const = 0;
+
+        // Orca:
+        virtual void clear_percent()                                                                                             = 0;
+        virtual void show_error_info(const std::string &msg, int code, const std::string &description, const std::string &extra) = 0;
 
         // Execute a functor on the main thread. Note that the exact time of
         // execution is hard to determine. This can be used to make modifications

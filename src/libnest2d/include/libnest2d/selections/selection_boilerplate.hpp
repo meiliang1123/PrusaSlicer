@@ -24,6 +24,8 @@ public:
 
     inline void stopCondition(StopCondition cond) { stopcond_ = cond; }
 
+    inline void unfitIndicator(UnfitIndicator fn) { unfitindicator_ = fn; }
+
     inline void clear() { packed_bins_.clear(); }
 
 protected:
@@ -33,6 +35,9 @@ protected:
     {
         // Safety test: try to pack each item into an empty bin. If it fails
         // then it should be removed from the list
+        Placer p{ bin };
+        p.configure(pcfg);
+        p.preload(pcfg.m_excluded_items);
         auto it = c.begin();
         while (it != c.end() && !stopcond_()) {
 
@@ -43,19 +48,18 @@ protected:
             const Item& itm = *it;
             Item cpy{itm};
 
-            Placer p{bin};
-            p.configure(pcfg);
-            if (itm.area() <= 0 || !p.pack(cpy)) {
-                static_cast<Item&>(*it).binId(BIN_ID_UNSET);
-                it = c.erase(it);
+            auto result = p.pack(cpy);
+            if (itm.area() <= 0 || !result) {
+                static_cast<Item&>(*it).binId(BIN_ID_UNFIT);
             }
-            else it++;
+            it++;
         }
     }
 
     PackGroup packed_bins_;
     ProgressFunction progress_ = [](unsigned){};
-    StopCondition stopcond_ = [](){ return false; };
+    StopCondition stopcond_ = []() { return false; };
+    UnfitIndicator unfitindicator_;
     int last_packed_bin_id_ = -1;
 };
 

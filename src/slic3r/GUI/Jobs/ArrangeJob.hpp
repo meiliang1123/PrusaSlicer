@@ -5,6 +5,7 @@
 #ifndef ARRANGEJOB_HPP
 #define ARRANGEJOB_HPP
 
+
 #include <optional>
 
 #include "Job.hpp"
@@ -23,39 +24,51 @@ class ArrangeJob : public Job
     using ArrangePolygon = arrangement::ArrangePolygon;
     using ArrangePolygons = arrangement::ArrangePolygons;
 
-    ArrangePolygons m_selected, m_unselected, m_unprintable;
+    //BBS: add locked logic
+    ArrangePolygons m_selected, m_unselected, m_unprintable, m_locked;
     std::vector<ModelInstance*> m_unarranged;
-    arrangement::ArrangeBed m_bed;
-    coord_t m_min_bed_inset = 0.;
+    std::map<int, ArrangePolygons> m_selected_groups;   // groups of selected items for sequential printing
+    std::vector<int> m_uncompatible_plates;  // plate indices with different printing sequence than global
 
+    arrangement::ArrangeParams params;
+    int current_plate_index = 0;
+    Polygon bed_poly;
     Plater *m_plater;
-    bool m_selection_only = false;
+
+    // BBS: add flag for whether on current part plate
+    bool only_on_partplate{false};
 
     // clear m_selected and m_unselected, reserve space for next usage
     void clear_input();
-
-    // Prepare all objects on the bed regardless of the selection
-    void prepare_all();
 
     // Prepare the selected and unselected items separately. If nothing is
     // selected, behaves as if everything would be selected.
     void prepare_selected();
 
-    ArrangePolygon get_arrange_poly_(ModelInstance *mi);
+    void prepare_all();
+
+    //BBS:prepare the items from current selected partplate
+    void prepare_partplate();
+    void prepare_wipe_tower();
+
+    ArrangePolygon prepare_arrange_polygon(void* instance);
+
+protected:
+
+    void check_unprintable();
 
 public:
-
-    enum Mode { Full, SelectionOnly };
 
     void prepare();
 
     void process(Ctl &ctl) override;
 
-    ArrangeJob(Mode mode = Full);
+    ArrangeJob();
 
     int status_range() const
     {
-        return int(m_selected.size() + m_unprintable.size());
+        // ensure finalize() is called after all operations in process() is finished.
+        return int(m_selected.size() + m_unprintable.size() + 1);
     }
 
     void finalize(bool canceled, std::exception_ptr &e) override;
@@ -67,55 +80,12 @@ std::optional<arrangement::ArrangePolygon> get_wipe_tower_arrangepoly(const Plat
 // the current bed width.
 static const constexpr double LOGICAL_BED_GAP = 1. / 5.;
 
+//BBS: add sudoku-style strides for x and y
 // Stride between logical beds
-double bed_stride(const Plater *plater);
+double bed_stride_x(const Plater* plater);
+double bed_stride_y(const Plater* plater);
 
-template<class T> struct PtrWrapper
-{
-    T *ptr;
-
-    explicit PtrWrapper(T *p) : ptr{p} {}
-
-    arrangement::ArrangePolygon get_arrange_polygon() const
-    {
-        return ptr->get_arrange_polygon();
-    }
-
-    void apply_arrange_result(const Vec2d &t, double rot)
-    {
-        ptr->apply_arrange_result(t, rot);
-    }
-};
-
-// Set up arrange polygon for a ModelInstance and Wipe tower
-template<class T>
-arrangement::ArrangePolygon get_arrange_poly(T obj, const Plater *plater)
-{
-    using ArrangePolygon = arrangement::ArrangePolygon;
-
-    ArrangePolygon ap = obj.get_arrange_polygon();
-    ap.setter         = [obj, plater](const ArrangePolygon &p) {
-        if (p.is_arranged()) {
-            Vec2d t = p.translation.cast<double>();
-            t.x() += p.bed_idx * bed_stride(plater);
-            T{obj}.apply_arrange_result(t, p.rotation);
-        }
-    };
-
-    return ap;
-}
-
-template<>
-arrangement::ArrangePolygon get_arrange_poly(ModelInstance *inst,
-                                             const Plater * plater);
-
-arrangement::ArrangeParams get_arrange_params(Plater *p);
-
-coord_t get_skirt_offset(const Plater* plater);
-
-void assign_logical_beds(std::vector<arrangement::ArrangePolygon> &items,
-                         const arrangement::ArrangeBed &bed,
-                         double stride);
+arrangement::ArrangeParams init_arrange_params(Plater *p);
 
 }} // namespace Slic3r::GUI
 

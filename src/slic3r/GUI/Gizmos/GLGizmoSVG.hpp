@@ -24,9 +24,6 @@
 namespace Slic3r{
 class ModelVolume;
 enum class ModelVolumeType : int;
-namespace GUI::Emboss {
-struct CreateVolumeParams;
-}
 }
 
 namespace Slic3r::GUI {
@@ -132,12 +129,9 @@ private:
     // process mouse event
     bool on_mouse_for_rotation(const wxMouseEvent &mouse_event);
     bool on_mouse_for_translate(const wxMouseEvent &mouse_event);
-    void on_mouse_confirm_edit(const wxMouseEvent &mouse_event);
 
     void volume_transformation_changed();
     
-    Emboss::CreateVolumeParams create_input(ModelVolumeType volume_type, std::string_view svg_filepath = "");
-
     struct GuiCfg;
     std::unique_ptr<const GuiCfg> m_gui_cfg;
 
@@ -175,9 +169,6 @@ private:
 
     // Keep size aspect ratio when True.
     bool m_keep_ratio = true;
-        
-    // setted only when wanted to use - not all the time
-    std::optional<ImVec2> m_set_window_offset;
 
     // Keep data about dragging only during drag&drop
     std::optional<SurfaceDrag> m_surface_drag;
@@ -199,7 +190,7 @@ private:
     std::string m_filename_preview;
 
     IconManager m_icon_manager;
-    IconManager::Icons m_icons;
+    IconManager::VIcons m_icons;
 
     // only temporary solution
     static const std::string M_ICON_FILENAME;

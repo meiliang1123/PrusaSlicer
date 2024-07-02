@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2021 - 2023 Oleksandra Iushchenko @YuSanka, Vojtěch Bubník @bubnikv, Enrico Turri @enricoturri1966
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "libslic3r/libslic3r.h"
 
 #include "ProjectDirtyStateManager.hpp"
@@ -10,8 +6,6 @@
 #include "MainFrame.hpp"
 #include "I18N.hpp"
 #include "Plater.hpp"
-
-#include "libslic3r/Model.hpp"
 
 #include <boost/algorithm/string/predicate.hpp>
 
@@ -23,11 +17,10 @@ namespace GUI {
 
 void ProjectDirtyStateManager::update_from_undo_redo_stack(bool dirty)
 {
-    if (m_plater_dirty != dirty) {
+    if (!m_plater_dirty)
         m_plater_dirty = dirty;
-        if (const Plater *plater = wxGetApp().plater(); plater && wxGetApp().initialized())
-            wxGetApp().mainframe->update_title();
-    }
+    if (const Plater *plater = wxGetApp().plater(); plater && wxGetApp().initialized())
+        wxGetApp().mainframe->update_title();
 }
 
 void ProjectDirtyStateManager::update_from_presets()
@@ -35,22 +28,25 @@ void ProjectDirtyStateManager::update_from_presets()
     m_presets_dirty = false;
     // check switching of the presets only for exist/loaded project, but not for new
     GUI_App &app = wxGetApp();
-    bool has_project = ! app.plater()->get_project_filename().IsEmpty();
-    for (const PresetCollection *preset_collection : app.get_active_preset_collections()) {
-        auto type = preset_collection->type();
-        m_presets_dirty |= (has_project && !m_initial_presets[type].empty() && m_initial_presets[type] != preset_collection->get_selected_preset_name()) || preset_collection->saved_is_dirty();
+    if (!app.plater()->get_project_filename().IsEmpty()) {
+        for (const auto &[type, name] : app.get_selected_presets()) { 
+            if (type == Preset::Type::TYPE_FILAMENT) { 
+                m_presets_dirty |= m_initial_filament_presets_names != wxGetApp().preset_bundle->filament_presets;
+                if (ConfigOption *color_option = wxGetApp().preset_bundle->project_config.option("filament_colour")) {
+                    auto colors = static_cast<ConfigOptionStrings *>(color_option->clone());
+                    m_presets_dirty |= m_initial_filament_presets_colors != colors->values;
+                    delete colors;
+                }
+            } else {
+                m_presets_dirty |= !m_initial_presets[type].empty() && m_initial_presets[type] != name;
+            }
+        }
+    } else {
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "project file name is empty";
     }
+    m_presets_dirty |= app.has_unsaved_preset_changes();
     m_project_config_dirty = m_initial_project_config != app.preset_bundle->project_config;
     app.mainframe->update_title();
-}
-
-void ProjectDirtyStateManager::update_from_preview()
-{
-    const bool is_dirty = m_initial_custom_gcode_per_print_z != wxGetApp().model().custom_gcode_per_print_z;
-    if (m_custom_gcode_per_print_z_dirty != is_dirty) {
-        m_custom_gcode_per_print_z_dirty = is_dirty;
-        wxGetApp().mainframe->update_title();
-    }
 }
 
 void ProjectDirtyStateManager::reset_after_save()
@@ -59,7 +55,6 @@ void ProjectDirtyStateManager::reset_after_save()
     m_plater_dirty  = false;
     m_presets_dirty = false;
     m_project_config_dirty = false;
-    m_custom_gcode_per_print_z_dirty = false;
     wxGetApp().mainframe->update_title();
 }
 
@@ -67,10 +62,19 @@ void ProjectDirtyStateManager::reset_initial_presets()
 {
     m_initial_presets.fill(std::string{});
     GUI_App &app = wxGetApp();
-    for (const PresetCollection *preset_collection : app.get_active_preset_collections())
-        m_initial_presets[preset_collection->type()] = preset_collection->get_selected_preset_name();
+    for (const auto &[type, name] : app.get_selected_presets()) { 
+        if (type == Preset::Type::TYPE_FILAMENT) {
+            m_initial_filament_presets_names = wxGetApp().preset_bundle->filament_presets;
+            if (ConfigOption *color_option = wxGetApp().preset_bundle->project_config.option("filament_colour")) {
+                auto colors = static_cast<ConfigOptionStrings *>(color_option->clone());
+                m_initial_filament_presets_colors = colors->values;
+                delete colors;
+            }
+        } else {
+            m_initial_presets[type] = name;
+        }
+    }
     m_initial_project_config = app.preset_bundle->project_config;
-    m_initial_custom_gcode_per_print_z = app.model().custom_gcode_per_print_z;
 }
 
 #if ENABLE_PROJECT_DIRTY_STATE_DEBUG_WINDOW

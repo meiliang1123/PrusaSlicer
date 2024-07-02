@@ -46,12 +46,12 @@ void CreateFontStyleImagesJob::process(Ctl &ctl)
         // create image description
         StyleManager::StyleImage &image = m_images[index];
         BoundingBox &bounding_box = image.bounding_box;
-        for (const ExPolygon &shape : shapes)
+        for (ExPolygon &shape : shapes)
             bounding_box.merge(BoundingBox(shape.contour.points));
         for (ExPolygon &shape : shapes) shape.translate(-bounding_box.min);
         
         // calculate conversion from FontPoint to screen pixels by size of font
-        double scale = get_text_shape_scale(item.prop, *item.font.font_file) * m_input.ppm;
+        double scale = get_text_shape_scale(item.prop, *item.font.font_file);
         scales[index] = scale;
 
         //double scale = font_prop.size_in_mm * SCALING_FACTOR;
@@ -106,7 +106,7 @@ void CreateFontStyleImagesJob::process(Ctl &ctl)
         sla::RasterEncoder encoder = [&offset = image.offset, &pix = m_pixels, w=m_width,h=m_height]
         (const void *ptr, size_t width, size_t height, size_t num_components) {
             // bigger value create darker image
-            unsigned char gray_level = 5;
+            unsigned char gray_level = 1;
             size_t size {static_cast<size_t>(w*h)};
             assert((offset.x() + width) <= (size_t)w);
             assert((offset.y() + height) <= (size_t)h);

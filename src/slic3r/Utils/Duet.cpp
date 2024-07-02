@@ -1,9 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2023 Oleksandra Iushchenko @YuSanka, David Kocík @kocikdav, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Vojtěch Král @vojtechkral
-///|/ Copyright (c) 2020 Manuel Coenen
-///|/ Copyright (c) 2018 Martin Loidl @LoidlM
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "Duet.hpp"
 
 #include <algorithm>
@@ -13,7 +7,6 @@
 #include <boost/log/trivial.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
-#include <boost/nowide/convert.hpp>
 
 #include <wx/frame.h>
 #include <wx/event.h>
@@ -27,31 +20,12 @@
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/MsgDialog.hpp"
-#include "slic3r/GUI/format.hpp"
 #include "Http.hpp"
-
-#include <curl/curl.h>
 
 namespace fs = boost::filesystem;
 namespace pt = boost::property_tree;
 
 namespace Slic3r {
-namespace {
-std::string escape_string(const std::string& unescaped)
-{
-	std::string ret_val;
-	CURL* curl = curl_easy_init();
-	if (curl) {
-		char* decoded = curl_easy_escape(curl, unescaped.c_str(), unescaped.size());
-		if (decoded) {
-			ret_val = std::string(decoded);
-			curl_free(decoded);
-		}
-		curl_easy_cleanup(curl);
-	}
-	return ret_val;
-}
-}
 
 Duet::Duet(DynamicPrintConfig *config) :
 	host(config->opt_string("print_host")),
@@ -75,7 +49,9 @@ wxString Duet::get_test_ok_msg () const
 
 wxString Duet::get_test_failed_msg (wxString &msg) const
 {
-    return GUI::format_wxstr("%s: %s", _L("Could not connect to Duet"), msg);
+    return GUI::from_u8((boost::format("%s: %s")
+                    % _utf8(L("Could not connect to Duet"))
+                    % std::string(msg.ToUTF8())).str());
 }
 
 bool Duet::upload(PrintHostUpload upload_data, ProgressFn prorgess_fn, ErrorFn error_fn, InfoFn info_fn) const
@@ -100,8 +76,6 @@ bool Duet::upload(PrintHostUpload upload_data, ProgressFn prorgess_fn, ErrorFn e
 	auto http = (dsf ? Http::put(std::move(upload_cmd)) : Http::post(std::move(upload_cmd)));
 	if (dsf) {
 		http.set_put_body(upload_data.source_path);
-		if (connect_msg.empty())
-            http.header("X-Session-Key", GUI::into_u8(connect_msg));
 	} else {
 		http.set_post_body(upload_data.source_path);
 	}
@@ -161,20 +135,7 @@ Duet::ConnectionType Duet::connect(wxString &msg) const
 					msg = format_error(body, error, status);
 				})
 				.on_complete([&](std::string body, unsigned) {
-					try {		
-						pt::ptree root;
-						std::istringstream iss(body);
-						pt::read_json(iss, root);
-						auto key = root.get_optional<std::string>("sessionKey");
-						if (key)
-							msg = boost::nowide::widen(*key);
-						res = ConnectionType::dsf;
-					}
-					catch (const std::exception&) {
-						BOOST_LOG_TRIVIAL(error) << "Failed to parse serverKey from Duet reply to Connect request: " << body;
-						msg = format_error(body, L("Failed to parse a Connect reply"), 0);
-						res = ConnectionType::error;
-					}
+					res = ConnectionType::dsf;
 				})
 				.perform_sync();
 		})
@@ -239,13 +200,12 @@ std::string Duet::get_upload_url(const std::string &filename, ConnectionType con
 std::string Duet::get_connect_url(const bool dsfUrl) const
 {
 	if (dsfUrl)	{
-		return (boost::format("%1%machine/connect?password=%2%")
-			% get_base_url()
-			% (password.empty() ? "reprap" : escape_string(password))).str();
+		return (boost::format("%1%machine/status")
+				% get_base_url()).str();
 	} else {
 		return (boost::format("%1%rr_connect?password=%2%&%3%")
 				% get_base_url()
-				% (password.empty() ? "reprap" : escape_string(password))
+				% (password.empty() ? "reprap" : password)
 				% timestamp_str()).str();
 	}
 }

@@ -6,7 +6,6 @@
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/Plater.hpp"
-#include "slic3r/GUI/GUI_ObjectManipulation.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmosCommon.hpp"
 
 #include "libslic3r/Geometry/ConvexHull.hpp"
@@ -19,8 +18,6 @@
 namespace Slic3r {
 namespace GUI {
 
-static const Slic3r::ColorRGBA DEFAULT_PLANE_COLOR       = { 0.9f, 0.9f, 0.9f, 0.5f };
-static const Slic3r::ColorRGBA DEFAULT_HOVER_PLANE_COLOR = { 0.9f, 0.9f, 0.9f, 0.75f };
 
 GLGizmoFlatten::GLGizmoFlatten(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id)
     : GLGizmoBase(parent, icon_filename, sprite_id)
@@ -76,7 +73,7 @@ CommonGizmosDataID GLGizmoFlatten::on_get_requirements() const
 
 std::string GLGizmoFlatten::on_get_name() const
 {
-    return _u8L("Place on face");
+    return _u8L("Lay on face");
 }
 
 bool GLGizmoFlatten::on_is_activable() const
@@ -95,7 +92,6 @@ void GLGizmoFlatten::on_render()
         return;
     
     shader->start_using();
-
     glsafe(::glClear(GL_DEPTH_BUFFER_BIT));
 
     glsafe(::glEnable(GL_DEPTH_TEST));
@@ -112,14 +108,13 @@ void GLGizmoFlatten::on_render()
         if (this->is_plane_update_necessary())
             update_planes();
         for (int i = 0; i < (int)m_planes.size(); ++i) {
-            m_planes[i].vbo.model.set_color(i == m_hover_id ? DEFAULT_HOVER_PLANE_COLOR : DEFAULT_PLANE_COLOR);
+		    m_planes[i].vbo.model.set_color(i == m_hover_id ? GLGizmoBase::FLATTEN_HOVER_COLOR : GLGizmoBase::FLATTEN_COLOR);
             m_planes[i].vbo.model.render();
         }
     }
 
     glsafe(::glEnable(GL_CULL_FACE));
     glsafe(::glDisable(GL_BLEND));
-
     shader->stop_using();
 }
 
@@ -170,22 +165,23 @@ void GLGizmoFlatten::update_planes()
     ch = ch.convex_hull_3d();
     m_planes.clear();
     on_unregister_raycasters_for_picking();
-    const Transform3d inst_matrix = mo->instances.front()->get_matrix_no_offset();
+    const Transform3d &inst_matrix = mo->instances.front()->get_matrix_no_offset();
 
     // Following constants are used for discarding too small polygons.
     const float minimal_area = 5.f; // in square mm (world coordinates)
     const float minimal_side = 1.f; // mm
+    const float minimal_angle = 1.f; // degree, initial value was 10, but cause bugs
 
     // Now we'll go through all the facets and append Points of facets sharing the same normal.
     // This part is still performed in mesh coordinate system.
     const int                num_of_facets  = ch.facets_count();
     const std::vector<Vec3f> face_normals   = its_face_normals(ch.its);
-    const std::vector<Vec3i> face_neighbors = its_face_neighbors(ch.its);
+    const std::vector<Vec3i32> face_neighbors = its_face_neighbors(ch.its);
     std::vector<int>         facet_queue(num_of_facets, 0);
     std::vector<bool>        facet_visited(num_of_facets, false);
     int                      facet_queue_cnt = 0;
     const stl_normal*        normal_ptr      = nullptr;
-    int facet_idx = 0;
+    int                      facet_idx       = 0;
     while (1) {
         // Find next unvisited triangle:
         for (; facet_idx < num_of_facets; ++ facet_idx)
@@ -203,7 +199,7 @@ void GLGizmoFlatten::update_planes()
             int facet_idx = facet_queue[-- facet_queue_cnt];
             const stl_normal& this_normal = face_normals[facet_idx];
             if (std::abs(this_normal(0) - (*normal_ptr)(0)) < 0.001 && std::abs(this_normal(1) - (*normal_ptr)(1)) < 0.001 && std::abs(this_normal(2) - (*normal_ptr)(2)) < 0.001) {
-                const Vec3i face = ch.its.indices[facet_idx];
+                const Vec3i32 face = ch.its.indices[facet_idx];
                 for (int j=0; j<3; ++j)
                     m_planes.back().vertices.emplace_back(ch.its.vertices[face[j]].cast<double>());
 
@@ -267,7 +263,7 @@ void GLGizmoFlatten::update_planes()
             discard = true;
         else {
             // We also check the inner angles and discard polygons with angles smaller than the following threshold
-            const double angle_threshold = ::cos(10.0 * (double)PI / 180.0);
+            const double angle_threshold = ::cos(minimal_angle * (double)PI / 180.0);
 
             for (unsigned int i = 0; i < polygon.size(); ++i) {
                 const Vec3d& prec = polygon[(i == 0) ? polygon.size() - 1 : i - 1];

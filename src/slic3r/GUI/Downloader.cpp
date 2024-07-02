@@ -6,9 +6,11 @@
 #include "GUI_App.hpp"
 #include "NotificationManager.hpp"
 #include "format.hpp"
+#include "MainFrame.hpp"
 
 #include <boost/algorithm/string.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/regex.hpp>
 
 namespace Slic3r {
 namespace GUI {
@@ -66,11 +68,11 @@ void open_folder(const std::string& path)
 
 std::string filename_from_url(const std::string& url)
 {
-	std::string url_plain = std::string(url.begin(), std::find(url.begin(), url.end(), '?'));
-	size_t slash = url_plain.find_last_of("/");
-	if (slash == std::string::npos)
-		return std::string();
-	return std::string(url_plain.begin() + slash + 1, url_plain.end());
+	// TODO: can it be done with curl?
+	size_t slash = url.find_last_of("/");
+	if (slash == std::string::npos && slash != url.size() - 1)
+		return {};
+	return url.substr(slash + 1, url.size() - slash + 1);
 }
 }
 
@@ -132,44 +134,51 @@ Downloader::Downloader()
 void Downloader::start_download(const std::string& full_url)
 {
 	assert(m_initialized);
-	
-	// TODO: There is a misterious slash appearing in recieved msg on windows
-#ifdef _WIN32
-	if (!boost::starts_with(full_url, "prusaslicer://open/?file=")) {
-#else
-    if (!boost::starts_with(full_url, "prusaslicer://open?file=")) {
-#endif
+
+    // Orca: Move to the 3D view
+    MainFrame* mainframe = wxGetApp().mainframe;
+    Plater* plater = wxGetApp().plater();
+
+    mainframe->Freeze();
+    mainframe->select_tab((size_t)MainFrame::TabPosition::tp3DEditor);
+    plater->select_view_3D("3D");
+    plater->select_view("plate");
+    plater->get_current_canvas3D()->zoom_to_bed();
+    mainframe->Thaw();
+
+    // Orca: Replace PS workaround for "mysterious slash" with a more dynamic approach
+    // Windows seems to have fixed the issue and this provides backwards compatability for those it still affects
+	boost::regex re(R"(^(orcaslicer|prusaslicer|bambustudio|cura):\/\/open[\/]?\?file=)", boost::regbase::icase);
+    boost::smatch results;
+
+	if (!boost::regex_search(full_url, results, re)) {
 		BOOST_LOG_TRIVIAL(error) << "Could not start download due to wrong URL: " << full_url;
-		// TODO: show error?
+        // Orca: show error
+        NotificationManager* ntf_mngr = wxGetApp().notification_manager();
+        ntf_mngr->push_notification(NotificationType::CustomNotification, NotificationManager::NotificationLevel::ErrorNotificationLevel,
+                                    "Could not start download due to malformed URL");
 		return;
 	}
     size_t id = get_next_id();
-    // TODO: still same mistery 
-#ifdef _WIN32
-    std::string escaped_url = FileGet::escape_url(full_url.substr(25));
-#else
-    std::string escaped_url = FileGet::escape_url(full_url.substr(24));
-#endif
-	if (!boost::starts_with(escaped_url, "https://") || !FileGet::is_subdomain(escaped_url, "printables.com")) {
-		std::string msg = format(_L("Download won't start. Download URL doesn't point to https://printables.com : %1%"), escaped_url);
-		BOOST_LOG_TRIVIAL(error) << msg;
-		NotificationManager* ntf_mngr = wxGetApp().notification_manager();
-		ntf_mngr->push_notification(NotificationType::CustomNotification, NotificationManager::NotificationLevel::RegularNotificationLevel, msg);
-		return;
-	}
-	
-	std::string text(escaped_url);
-    m_downloads.emplace_back(std::make_unique<Download>(id, std::move(escaped_url), this, m_dest_folder));
-	NotificationManager* ntf_mngr = wxGetApp().notification_manager();
-	ntf_mngr->push_download_URL_progress_notification(id, m_downloads.back()->get_filename(), std::bind(&Downloader::user_action_callback, this, std::placeholders::_1, std::placeholders::_2));
-	m_downloads.back()->start();
-	BOOST_LOG_TRIVIAL(debug) << "started download";
+    std::string escaped_url = FileGet::escape_url(full_url.substr(results.length()));
+    if (is_bambustudio_open(full_url) || (is_orca_open(full_url) && is_makerworld_link(full_url)))
+        plater->request_model_download(escaped_url);
+    else {
+        std::string text(escaped_url);
+        m_downloads.emplace_back(std::make_unique<Download>(id, std::move(escaped_url), this, m_dest_folder));
+        NotificationManager* ntf_mngr = wxGetApp().notification_manager();
+        ntf_mngr->push_download_URL_progress_notification(id, m_downloads.back()->get_filename(),
+                                                          std::bind(&Downloader::user_action_callback, this, std::placeholders::_1,
+                                                                    std::placeholders::_2));
+        m_downloads.back()->start();
+    }
+    BOOST_LOG_TRIVIAL(debug) << "started download";
 }
 
 void Downloader::on_progress(wxCommandEvent& event)
 {
 	size_t id = event.GetInt();
-	float percent = (float)std::stoi(into_u8(event.GetString())) / 100.f;
+	float percent = (float)std::stoi(boost::nowide::narrow(event.GetString())) / 100.f;
 	//BOOST_LOG_TRIVIAL(error) << "progress " << id << ": " << percent;
 	NotificationManager* ntf_mngr = wxGetApp().notification_manager();
 	BOOST_LOG_TRIVIAL(trace) << "Download "<< id << ": " << percent;
@@ -178,10 +187,10 @@ void Downloader::on_progress(wxCommandEvent& event)
 void Downloader::on_error(wxCommandEvent& event)
 {
 	size_t id = event.GetInt();
-    set_download_state(event.GetInt(), DownloadState::DownloadError);   
+    set_download_state(event.GetInt(), DownloadState::DownloadError);
     BOOST_LOG_TRIVIAL(error) << "Download error: " << event.GetString();
 	NotificationManager* ntf_mngr = wxGetApp().notification_manager();
-	ntf_mngr->set_download_URL_error(id, into_u8(event.GetString()));
+	ntf_mngr->set_download_URL_error(id, boost::nowide::narrow(event.GetString()));
 	show_error(nullptr, format_wxstr(L"%1%\n%2%", _L("The download has failed") + ":", event.GetString()));
 }
 void Downloader::on_complete(wxCommandEvent& event)

@@ -1,12 +1,3 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Pavel Mikuš @Godrak, Lukáš Hejl @hejllukas, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Vojtěch Král @vojtechkral
-///|/ Copyright (c) SuperSlicer 2019 Remi Durand @supermerill
-///|/
-///|/ ported from lib/Slic3r/Fill/Base.pm:
-///|/ Copyright (c) Prusa Research 2016 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_FillBase_hpp_
 #define slic3r_FillBase_hpp_
 
@@ -23,7 +14,12 @@
 #include "../Exception.hpp"
 #include "../Utils.hpp"
 #include "../ExPolygon.hpp"
+//BBS: necessary header for new function
 #include "../PrintConfig.hpp"
+#include "../Flow.hpp"
+#include "../ExtrusionEntity.hpp"
+#include "../ExtrusionEntityCollection.hpp"
+#include "../ShortestPath.hpp"
 
 namespace Slic3r {
 
@@ -69,12 +65,19 @@ struct FillParams
     bool        complete 		{ false };
 
     // For Concentric infill, to switch between Classic and Arachne.
-    bool        use_arachne     { false };
+    bool        use_arachne{ false };
     // Layer height for Concentric infill with Arachne.
     coordf_t    layer_height    { 0.f };
 
-    // For infills that produce closed loops to force printing those loops clockwise.
-    bool        prefer_clockwise_movements { false };
+    // BBS
+    Flow            flow;
+    ExtrusionRole   extrusion_role{ ExtrusionRole(0) };
+    bool            using_internal_flow{ false };
+    //BBS: only used for new top surface pattern
+    float           no_extrusion_overlap{ 0.0 };
+    const           PrintRegionConfig* config{ nullptr };
+    bool            dont_sort{ false }; // do not sort the lines, just simply connect them
+    bool            can_reverse{true};
 };
 static_assert(IsTriviallyCopyable<FillParams>::value, "FillParams class is not POD (and it should be - see constructor).");
 
@@ -91,6 +94,8 @@ public:
     coordf_t    overlap;
     // in radians, ccw, 0 = East
     float       angle;
+    // Orca: enable angle shifting for layer change
+    bool        rotate_angle{ true };
     // In scaled coordinates. Maximum lenght of a perimeter segment connecting two infill lines.
     // Used by the FillRectilinear2, FillGrid2, FillTriangles, FillStars and FillCubic.
     // If left to zero, the links will not be limited.
@@ -104,8 +109,15 @@ public:
     FillAdaptive::Octree* adapt_fill_octree = nullptr;
 
     // PrintConfig and PrintObjectConfig are used by infills that use Arachne (Concentric and FillEnsuring).
+    // Orca: also used by gap fill function.
     const PrintConfig       *print_config        = nullptr;
     const PrintObjectConfig *print_object_config = nullptr;
+
+    // BBS: all no overlap expolygons in same layer
+    ExPolygons  no_overlap_expolygons;
+
+    static float infill_anchor;
+    static float infill_anchor_max;
 
 public:
     virtual ~Fill() {}
@@ -123,11 +135,13 @@ public:
     // Do not sort the fill lines to optimize the print head path?
     virtual bool no_sort() const { return false; }
 
-    virtual bool is_self_crossing() = 0;
-
     // Perform the fill.
     virtual Polylines fill_surface(const Surface *surface, const FillParams &params);
-    virtual ThickPolylines fill_surface_arachne(const Surface *surface, const FillParams &params);
+    virtual ThickPolylines fill_surface_arachne(const Surface* surface, const FillParams& params);
+    
+    // BBS: this method is used to fill the ExtrusionEntityCollection.
+    // It call fill_surface by default
+    virtual void fill_surface_extrusion(const Surface* surface, const FillParams& params, ExtrusionEntitiesPtr& out);
 
 protected:
     Fill() :
@@ -138,6 +152,7 @@ protected:
         overlap(0.),
         // Initial angle is undefined.
         angle(FLT_MAX),
+        rotate_angle(true),
         link_max_length(0),
         loop_clipping(0),
         // The initial bounding box is empty, therefore undefined.
@@ -146,24 +161,28 @@ protected:
 
     // The expolygon may be modified by the method to avoid a copy.
     virtual void    _fill_surface_single(
-        const FillParams                & /* params */,
+        const FillParams                & /* params */, 
         unsigned int                      /* thickness_layers */,
-        const std::pair<float, Point>   & /* direction */,
+        const std::pair<float, Point>   & /* direction */, 
         ExPolygon                         /* expolygon */,
-        Polylines                       & /* polylines_out */) {}
+        Polylines                       & /* polylines_out */) {};
 
     // Used for concentric infill to generate ThickPolylines using Arachne.
-    virtual void _fill_surface_single(const FillParams              &params,
-                                      unsigned int                   thickness_layers,
-                                      const std::pair<float, Point> &direction,
-                                      ExPolygon                      expolygon,
-                                      ThickPolylines                &thick_polylines_out) {}
+    virtual void _fill_surface_single(const FillParams& params,
+        unsigned int                   thickness_layers,
+        const std::pair<float, Point>& direction,
+        ExPolygon                      expolygon,
+        ThickPolylines& thick_polylines_out) {}
 
-    virtual float _layer_angle(size_t idx) const { return (idx & 1) ? float(M_PI/2.) : 0; }
+    virtual float _layer_angle(size_t idx) const { return (rotate_angle && (idx & 1)) ? float(M_PI/2.) : 0; }
 
+    virtual std::pair<float, Point> _infill_direction(const Surface *surface) const;
+    
+    // Orca: Dedicated function to calculate gap fill lines for the provided surface, according to the print object parameters
+    // and append them to the out ExtrusionEntityCollection.
+    void _create_gap_fill(const Surface* surface, const FillParams& params, ExtrusionEntityCollection* out);
 
 public:
-    virtual std::pair<float, Point> _infill_direction(const Surface *surface) const;
     static void connect_infill(Polylines &&infill_ordered, const ExPolygon &boundary, Polylines &polylines_out, const double spacing, const FillParams &params);
     static void connect_infill(Polylines &&infill_ordered, const Polygons &boundary, const BoundingBox& bbox, Polylines &polylines_out, const double spacing, const FillParams &params);
     static void connect_infill(Polylines &&infill_ordered, const std::vector<const Polygon*> &boundary, const BoundingBox &bbox, Polylines &polylines_out, double spacing, const FillParams &params);

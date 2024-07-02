@@ -12,12 +12,16 @@
 #include "GUI_Utils.hpp"
 #include "wxExtensions.hpp"
 #include "libslic3r/PresetBundle.hpp"
+#include "Widgets/Button.hpp"
+#include "Widgets/ScrolledWindow.hpp"
 
 class ScalableButton;
 class wxStaticText;
 
 namespace Slic3r {
-namespace GUI {
+namespace GUI{
+
+wxDECLARE_EVENT(EVT_DIFF_DIALOG_TRANSFER, SimpleEvent);
 
 // ----------------------------------------------------------------------------
 //                  ModelNode: a node inside DiffModel
@@ -28,7 +32,7 @@ class PresetComboBox;
 class MainFrame;
 using ModelNodePtrArray = std::vector<std::unique_ptr<ModelNode>>;
 
-// On all of 3 different platforms Bitmap+Text icon column looks different 
+// On all of 3 different platforms Bitmap+Text icon column looks different
 // because of Markup text is missed or not implemented.
 // As a temporary workaround, we will use:
 // MSW - DataViewBitmapText (our custom renderer wxBitmap + wxString, supported Markup text)
@@ -46,7 +50,6 @@ class ModelNode
     std::string         m_icon_name;
     // saved values for colors if they exist
     wxString            m_old_color;
-    wxString            m_mod_color;
     wxString            m_new_color;
 
 #ifdef __linux__
@@ -61,17 +64,14 @@ public:
 #ifdef __linux__
     wxIcon      m_icon;
     wxIcon      m_old_color_bmp;
-    wxIcon      m_mod_color_bmp;
     wxIcon      m_new_color_bmp;
 #else
     wxBitmap    m_icon;
     wxBitmap    m_old_color_bmp;
-    wxBitmap    m_mod_color_bmp;
     wxBitmap    m_new_color_bmp;
 #endif //__linux__
     wxString    m_text;
     wxString    m_old_value;
-    wxString    m_mod_value;
     wxString    m_new_value;
 
     // TODO/FIXME:
@@ -86,7 +86,7 @@ public:
     bool                m_container {true};
 
     // preset(root) node
-    ModelNode(Preset::Type preset_type, wxWindow* parent_win, const wxString& text, const std::string& icon_name, const wxString& new_val_column_text);
+    ModelNode(Preset::Type preset_type, wxWindow* parent_win, const wxString& text, const std::string& icon_name);
 
     // category node
     ModelNode(ModelNode* parent, const wxString& text, const std::string& icon_name);
@@ -95,7 +95,7 @@ public:
     ModelNode(ModelNode* parent, const wxString& text);
 
     // option node
-    ModelNode(ModelNode* parent, const wxString& text, const wxString& old_value, const wxString& mod_value, const wxString& new_value);
+    ModelNode(ModelNode* parent, const wxString& text, const wxString& old_value, const wxString& new_value);
 
     bool                IsContainer() const         { return m_container; }
     bool                IsToggled() const           { return m_toggle; }
@@ -130,20 +130,17 @@ class DiffModel : public wxDataViewModel
     ModelNode *AddOption(ModelNode *group_node,
                          wxString   option_name,
                          wxString   old_value,
-                         wxString   mod_value,
                          wxString   new_value);
     ModelNode *AddOptionWithGroup(ModelNode *category_node,
                                   wxString   group_name,
                                   wxString   option_name,
                                   wxString   old_value,
-                                  wxString   mod_value,
                                   wxString   new_value);
     ModelNode *AddOptionWithGroupAndCategory(ModelNode *preset_node,
                                              wxString   category_name,
                                              wxString   group_name,
                                              wxString   option_name,
                                              wxString   old_value,
-                                             wxString   mod_value,
                                              wxString   new_value,
                                              const std::string category_icon_name);
 
@@ -152,7 +149,6 @@ public:
         colToggle,
         colIconText,
         colOldValue,
-        colModValue,
         colNewValue,
         colMax
     };
@@ -162,9 +158,9 @@ public:
 
     void            SetAssociatedControl(wxDataViewCtrl* ctrl) { m_ctrl = ctrl; }
 
-    wxDataViewItem  AddPreset(Preset::Type type, wxString preset_name, PrinterTechnology pt, wxString new_preset_name = wxString());
+    wxDataViewItem  AddPreset(Preset::Type type, wxString preset_name, PrinterTechnology pt);
     wxDataViewItem  AddOption(Preset::Type type, wxString category_name, wxString group_name, wxString option_name,
-                              wxString old_value, wxString mod_value, wxString new_value, const std::string category_icon_name);
+                              wxString old_value, wxString new_value, const std::string category_icon_name);
 
     void            UpdateItemEnabling(wxDataViewItem item);
     bool            IsEnabledItem(const wxDataViewItem& item);
@@ -175,7 +171,6 @@ public:
 
     wxDataViewItem  Delete(const wxDataViewItem& item);
     void            Clear();
-    wxDataViewItem  GetItemByName(wxString name);
 
     wxDataViewItem  GetParent(const wxDataViewItem& item) const override;
     unsigned int    GetChildren(const wxDataViewItem& parent, wxDataViewItemArray& array) const override;
@@ -206,7 +201,6 @@ class DiffViewCtrl : public wxDataViewCtrl
         std::string     opt_key;
         wxString        opt_name;
         wxString        old_val;
-        wxString        mod_val;
         wxString        new_val;
         Preset::Type    type;
         bool            is_long{ false };
@@ -218,12 +212,7 @@ class DiffViewCtrl : public wxDataViewCtrl
 
 public:
     DiffViewCtrl(wxWindow* parent, wxSize size);
-    ~DiffViewCtrl() override {
-        if (model) {
-            Clear();
-            model->DecRef();
-        }
-    }
+    ~DiffViewCtrl();
 
     DiffModel* model{ nullptr };
 
@@ -231,7 +220,7 @@ public:
     void    AppendToggleColumn_(const wxString& label, unsigned model_column, int width);
     void    Rescale(int em = 0);
     void    Append(const std::string& opt_key, Preset::Type type, wxString category_name, wxString group_name, wxString option_name,
-                   wxString old_value, wxString mod_value, wxString new_value, const std::string category_icon_name);
+                   wxString old_value, wxString new_value, const std::string category_icon_name);
     void    Clear();
 
     wxString    get_short_string(wxString full_string);
@@ -240,9 +229,6 @@ public:
     void        item_value_changed(wxDataViewEvent& event);
     void        set_em_unit(int em) { m_em_unit = em; }
     bool        has_unselected_options();
-    bool        has_long_strings() { return m_has_long_strings; }
-    bool        has_new_value_column() { return this->GetColumnCount() == DiffModel::colMax; }
-    void        update_item_enabling(wxDataViewItem item);
 
     std::vector<std::string> options(Preset::Type type, bool selected);
     std::vector<std::string> selected_options();
@@ -254,6 +240,7 @@ enum ActionButtons {
     KEEP = 2,
     SAVE = 4,
     DONT_SAVE = 8,
+    REMEMBER_CHOISE = 0x10000
 };
 
 enum class Action {
@@ -266,16 +253,43 @@ enum class Action {
 //------------------------------------------
 //          UnsavedChangesDialog
 //------------------------------------------
+#define BOTH_SIDES_BORDER 25
+
+struct PresetItem
+{
+    Preset::Type type;
+    std::string  opt_key;
+    wxString     category_name;
+    wxString     group_name;
+    wxString     option_name;
+    wxString     old_value;
+    wxString     new_value;
+};
+
+
 class UnsavedChangesDialog : public DPIDialog
 {
-    DiffViewCtrl*           m_tree          { nullptr };
-    ScalableButton*         m_save_btn      { nullptr };
-    ScalableButton*         m_transfer_btn  { nullptr };
-    ScalableButton*         m_discard_btn   { nullptr };
+protected:
+    wxPanel *     m_top_line;
+    wxPanel *     m_panel_tab;
+    wxPanel *     m_table_top;
+    wxPanel *     title_block_middle;
+    wxPanel *     title_block_right;
+    wxStaticText *static_temp_title;
+    wxStaticText *static_oldv_title;
+    wxStaticText *static_newv_title;
+    wxBoxSizer *  m_sizer_bottom;
+
+    //DiffViewCtrl*           m_tree          { nullptr };
+    Button*                 m_save_btn      { nullptr };
+    Button*                 m_transfer_btn  { nullptr };
+    Button*                 m_discard_btn   { nullptr };
+    Button*                 m_cancel_btn    { nullptr };
     wxStaticText*           m_action_line   { nullptr };
     wxStaticText*           m_info_line     { nullptr };
-    wxCheckBox*             m_remember_choice   { nullptr };
+    wxScrolledWindow*       m_scrolledWindow{ nullptr };
 
+    bool                    m_has_long_strings  { false };
     int                     m_save_btn_id       { wxID_ANY };
     int                     m_move_btn_id       { wxID_ANY };
     int                     m_continue_btn_id   { wxID_ANY };
@@ -288,22 +302,46 @@ class UnsavedChangesDialog : public DPIDialog
 
     // selected action after Dialog closing
     Action m_exit_action {Action::Undef};
+
+public:
+    //BBS: add project embedded preset relate logic
+    struct PresetData
+    {
+        std::string name;
+        Preset::Type type;
+        bool save_to_project;
+
+        PresetData(std::string preset_name, Preset::Type preset_type, bool save_project)
+            :name(preset_name), type(preset_type), save_to_project(save_project)
+        {
+        }
+    };
+
+private:
+    std::vector<PresetItem> m_presetitems;
     // preset names which are modified in SavePresetDialog and related types
-    std::vector<std::pair<std::string, Preset::Type>>  names_and_types;
+    std::vector<PresetData>  names_and_types;
+    //std::vector<std::pair<std::string, Preset::Type>>  names_and_types;
     // additional action buttons used in dialog
     int m_buttons { ActionButtons::TRANSFER | ActionButtons::SAVE };
+
+    std::string m_new_selected_preset_name;
 
 public:
 
     // show unsaved changes when preset is switching
-    UnsavedChangesDialog(Preset::Type type, PresetCollection* dependent_presets, const std::string& new_selected_preset = std::string());
+    UnsavedChangesDialog(Preset::Type type, PresetCollection* dependent_presets, const std::string& new_selected_preset, bool no_transfer = false);
     // show unsaved changes for all another cases
     UnsavedChangesDialog(const wxString& caption, const wxString& header, const std::string& app_config_key, int act_buttons);
     ~UnsavedChangesDialog() override = default;
 
-    void build(Preset::Type type, PresetCollection* dependent_presets, const std::string& new_selected_preset, const wxString& header = "");
+    int ShowModal();
+
+    void        build(Preset::Type type, PresetCollection *dependent_presets, const std::string &new_selected_preset, const wxString &header = "");
     void update(Preset::Type type, PresetCollection* dependent_presets, const std::string& new_selected_preset, const wxString& header);
-    void update_tree(Preset::Type type, PresetCollection *presets, const std::string& new_selected_preset);
+    void update_list();
+    std::string subreplace(std::string resource_str, std::string sub_str, std::string new_str);
+    void        update_tree(Preset::Type type, PresetCollection *presets);
     void show_info_line(Action action, std::string preset_name = "");
     void update_config(Action action);
     void close(Action action);
@@ -315,20 +353,42 @@ public:
     bool discard() const            { return m_exit_action == Action::Discard;  }
 
     // get full bundle of preset names and types for saving
-    const std::vector<std::pair<std::string, Preset::Type>>& get_names_and_types() { return names_and_types; }
+    //BBS: add project embedded preset relate logic
+    const std::vector<UnsavedChangesDialog::PresetData>& get_names_and_types() { return names_and_types; }
+    bool get_save_to_project_option() { return names_and_types[0].save_to_project; }
+    //const std::vector<std::pair<std::string, Preset::Type>>& get_names_and_types() { return names_and_types; }
     // short version of the previous function, for the case, when just one preset is modified
-    std::string get_preset_name() { return names_and_types[0].first; }
+    std::string get_preset_name() { return names_and_types[0].name; }
 
-    std::vector<std::string> get_unselected_options(Preset::Type type)  { return m_tree->options(type, false); }
-    std::vector<std::string> get_selected_options  (Preset::Type type)  { return m_tree->options(type, true); }
-    std::vector<std::string> get_selected_options()                     { return m_tree->selected_options(); }
-    bool                     has_unselected_options()                   { return m_tree->has_unselected_options(); }
+    std::vector<std::string> get_unselected_options(Preset::Type type) { /* return m_tree->options(type, false);*/return std::vector<std::string>();}
+    std::vector<std::string> get_selected_options  (Preset::Type type)  {
+        //return m_tree->options(type, true);
+         std::vector<std::string> tmp;
+        for (int i = 0; i < m_presetitems.size(); i++) {
+            if (m_presetitems[i].type == type) {
+                tmp.push_back(m_presetitems[i].opt_key);
+            }
+        }
 
-    static wxString msg_success_saved_modifications(size_t saved_presets_cnt);
+        return tmp;
+    }
+    std::vector<std::string> get_selected_options()                     {
+        //return m_tree->selected_options();
+
+        std::vector<std::string> tmp;
+        for (int i = 0; i < m_presetitems.size(); i++)
+        {
+           tmp.push_back(m_presetitems[i].opt_key);
+        }
+
+        return tmp;
+    }
+    bool                     has_unselected_options()                   { /*return m_tree->has_unselected_options();*/return false;}
 
 protected:
     void on_dpi_changed(const wxRect& suggested_rect) override;
     void on_sys_color_changed() override;
+    bool check_option_valid();
 };
 
 
@@ -338,8 +398,8 @@ protected:
 class FullCompareDialog : public wxDialog
 {
 public:
-    FullCompareDialog(const wxString& option_name, const wxString& old_value, const wxString& mod_value, const wxString& new_value,
-                      const wxString& old_value_header, const wxString& mod_value_header, const wxString& new_value_header);
+    FullCompareDialog(const wxString& option_name, const wxString& old_value, const wxString& new_value,
+                      const wxString& old_value_header, const wxString& new_value_header);
     ~FullCompareDialog() override = default;
 };
 
@@ -355,16 +415,15 @@ class DiffPresetDialog : public DPIDialog
     wxStaticText*           m_bottom_info_line  { nullptr };
     wxCheckBox*             m_show_all_presets  { nullptr };
     wxCheckBox*             m_use_for_transfer  { nullptr };
-    ScalableButton*         m_transfer_btn      { nullptr };
-    ScalableButton*         m_save_btn          { nullptr };
-    ScalableButton*         m_cancel_btn        { nullptr };
+    Button*                 m_transfer_btn      { nullptr };
+    Button*                 m_cancel_btn        { nullptr };
     wxBoxSizer*             m_buttons           { nullptr };
     wxBoxSizer*             m_edit_sizer        { nullptr };
 
     Preset::Type            m_view_type         { Preset::TYPE_INVALID };
     PrinterTechnology       m_pr_technology;
-    PresetBundle            m_preset_bundle_left;
-    PresetBundle            m_preset_bundle_right;
+    std::unique_ptr<PresetBundle>   m_preset_bundle_left;
+    std::unique_ptr<PresetBundle>   m_preset_bundle_right;
 
     void create_buttons();
     void create_edit_sizer();
@@ -380,9 +439,7 @@ class DiffPresetDialog : public DPIDialog
     void update_controls_visibility(Preset::Type type = Preset::TYPE_INVALID);
     void update_compatibility(const std::string& preset_name, Preset::Type type, PresetBundle* preset_bundle);
          
-    std::vector<std::string> get_options_to_save(Preset::Type type);
-    void                     button_event(Action act);
-    bool                     is_save_confirmed();
+    void button_event(Action act);
 
     struct DiffPresets
     {
@@ -393,30 +450,20 @@ class DiffPresetDialog : public DPIDialog
 
     std::vector<DiffPresets> m_preset_combos;
 
-    // attributes witch are used for save preset
-    struct PresetToSave
-    {
-        Preset::Type    type;
-        std::string     from_name;
-        std::string     to_name;
-        std::string     new_name;
-    };
-
-    std::vector<PresetToSave>  presets_to_save;
-
 public:
     DiffPresetDialog(MainFrame*mainframe);
     ~DiffPresetDialog() override = default;
 
     void show(Preset::Type type = Preset::TYPE_INVALID);
-    void update_presets(Preset::Type type = Preset::TYPE_INVALID, bool update_preset_bundles_from_app = true);
+    void update_presets(Preset::Type type = Preset::TYPE_INVALID);
 
-    void process_options(std::function<void(Preset::Type)> process);
+    Preset::Type        view_type() const           { return m_view_type; }
+    PrinterTechnology   printer_technology() const  { return m_pr_technology; }
 
     std::string get_left_preset_name(Preset::Type type);
     std::string get_right_preset_name(Preset::Type type);
 
-    std::vector<std::string> get_selected_options(Preset::Type type) const { return m_tree->options(type, true); }
+    std::vector<std::string> get_selected_options(Preset::Type type) const { return std::move(m_tree->options(type, true)); }
 
     std::array<Preset::Type, 3>         types_list() const;
 
@@ -425,7 +472,7 @@ protected:
     void on_sys_color_changed() override;
 };
 
-} 
+}
 }
 
 #endif //slic3r_UnsavedChangesDialog_hpp_

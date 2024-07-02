@@ -8,14 +8,18 @@
 #include "libslic3r/Point.hpp"
 #include "libslic3r/Color.hpp"
 
+#include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/GLModel.hpp"
 #include "slic3r/GUI/MeshUtils.hpp"
 #include "slic3r/GUI/SceneRaycaster.hpp"
 
 #include <cereal/archives/binary.hpp>
 
+#include <wx/event.h>
+
+#define ENABLE_FIXED_GRABBER 1
+
 class wxWindow;
-class wxMouseEvent;
 
 namespace Slic3r {
 
@@ -25,11 +29,7 @@ class ModelObject;
 
 namespace GUI {
 
-static const ColorRGBA DEFAULT_BASE_COLOR        = { 0.625f, 0.625f, 0.625f, 1.0f };
-static const ColorRGBA DEFAULT_DRAG_COLOR        = ColorRGBA::WHITE();
-static const ColorRGBA DEFAULT_HIGHLIGHT_COLOR   = ColorRGBA::ORANGE();
-static const std::array<ColorRGBA, 3> AXES_COLOR = {{ ColorRGBA::X(), ColorRGBA::Y(), ColorRGBA::Z() }};
-static const ColorRGBA CONSTRAINED_COLOR         = ColorRGBA::GRAY();
+
 
 class ImGuiWrapper;
 class GLCanvas3D;
@@ -43,6 +43,25 @@ public:
     // (254 is choosen to leave some space for forward compatibility)
     static const unsigned int BASE_ID = 255 * 255 * 254;
     static const unsigned int GRABBER_ELEMENTS_MAX_COUNT = 7;
+
+    static float INV_ZOOM;
+
+    //BBS colors
+    static ColorRGBA DEFAULT_BASE_COLOR;
+    static ColorRGBA DEFAULT_DRAG_COLOR;
+    static ColorRGBA DEFAULT_HIGHLIGHT_COLOR;
+    static std::array<ColorRGBA, 3> AXES_COLOR;
+    static std::array<ColorRGBA, 3> AXES_HOVER_COLOR;
+    static ColorRGBA CONSTRAINED_COLOR;
+    static ColorRGBA FLATTEN_COLOR;
+    static ColorRGBA FLATTEN_HOVER_COLOR;
+    static ColorRGBA GRABBER_NORMAL_COL;
+    static ColorRGBA GRABBER_HOVER_COL;
+    static ColorRGBA GRABBER_UNIFORM_COL;
+    static ColorRGBA GRABBER_UNIFORM_HOVER_COL;
+
+    static void update_render_colors();
+    static void load_render_colors();
 
     enum class EGrabberExtension
     {
@@ -64,13 +83,16 @@ protected:
         static const float SizeFactor;
         static const float MinHalfSize;
         static const float DraggingScaleFactor;
+        static const float FixedGrabberSize;
+        static const float FixedRadiusSize;
 
         bool enabled{ true };
         bool dragging{ false };
         Vec3d center{ Vec3d::Zero() };
         Vec3d angles{ Vec3d::Zero() };
         Transform3d matrix{ Transform3d::Identity() };
-        ColorRGBA color{ ColorRGBA::WHITE() };
+        ColorRGBA color{GRABBER_NORMAL_COL};
+        ColorRGBA hover_color{GRABBER_HOVER_COL};
         EGrabberExtension extensions{ EGrabberExtension::None };
         // the picking id shared by all the elements
         int picking_id{ -1 };
@@ -79,10 +101,11 @@ protected:
         Grabber() = default;
         ~Grabber();
 
-        void render(bool hover, float size) { render(size, hover ? complementary(color) : color); }
+        void render(bool hover, float size) { render(size, hover ? hover_color : color); }
 
         float get_half_size(float size) const;
         float get_dragging_half_size(float size) const;
+        PickingModel &get_cube();
 
         void register_raycasters_for_picking(int id);
         void unregister_raycasters_for_picking();
@@ -127,6 +150,8 @@ protected:
     bool m_first_input_window_render{ true };
     CommonGizmosDataPool* m_c{ nullptr };
 
+    bool m_is_dark_mode = false;
+
 public:
     GLGizmoBase(GLCanvas3D& parent,
                 const std::string& icon_filename,
@@ -147,6 +172,8 @@ public:
 
     const std::string& get_icon_filename() const { return m_icon_filename; }
 
+    void set_icon_filename(const std::string& filename);
+
     bool is_activable() const { return on_is_activable(); }
     bool is_selectable() const { return on_is_selectable(); }
     CommonGizmosDataID get_requirements() const { return on_get_requirements(); }
@@ -155,6 +182,8 @@ public:
     virtual std::string get_gizmo_leaving_text() const { assert(false); return ""; }
     virtual std::string get_action_snapshot_name() const;
     void set_common_data_pool(CommonGizmosDataPool* ptr) { m_c = ptr; }
+
+    virtual bool apply_clipping_plane() { return true; }
 
     unsigned int get_sprite_id() const { return m_sprite_id; }
 
@@ -168,12 +197,16 @@ public:
 
     void render() { on_render(); }
     void render_input_window(float x, float y, float bottom_limit);
+    virtual void on_change_color_mode(bool is_dark) {  m_is_dark_mode = is_dark; }
 
     /// <summary>
     /// Mouse tooltip text
     /// </summary>
     /// <returns>Text to be visible in mouse tooltip</returns>
     virtual std::string get_tooltip() const { return ""; }
+
+    int get_count() { return ++count; }
+    std::string get_gizmo_name() { return on_get_name(); }
 
     /// <summary>
     /// Is called when data (Selection) is changed
@@ -195,6 +228,7 @@ public:
     virtual bool is_selection_rectangle_dragging() const { return false; }
 
 protected:
+    float last_input_window_width = 0;
     virtual bool on_init() = 0;
     virtual void on_load(cereal::BinaryInputArchive& ar) {}
     virtual void on_save(cereal::BinaryOutputArchive& ar) const {}
@@ -214,6 +248,11 @@ protected:
 
     virtual void on_render() = 0;
     virtual void on_render_input_window(float x, float y, float bottom_limit) {}
+
+    bool GizmoImguiBegin(const std::string& name, int flags);
+    void GizmoImguiEnd();
+    void GizmoImguiSetNextWIndowPos(float &x, float y, int flag, float pivot_x = 0.0f, float pivot_y = 0.0f);
+    void GizmoImguiSetNextWIndowPos(float &x, float y, float w, float h, int flag, float pivot_x = 0.0f, float pivot_y = 0.0f);
 
     void register_grabbers_for_picking();
     void unregister_grabbers_for_picking();
@@ -244,6 +283,7 @@ private:
     // Flag for dirty visible state of Gizmo
     // When True then need new rendering
     bool m_dirty{ false };
+    int count = 0;
 };
 
 } // namespace GUI

@@ -17,3 +17,7 @@ add_library(imgui STATIC
     imstb_textedit.h
     imstb_truetype.h
 )
+
+if(Boost_FOUND)
+    target_link_libraries(imgui PRIVATE boost_headeronly)
+endif()

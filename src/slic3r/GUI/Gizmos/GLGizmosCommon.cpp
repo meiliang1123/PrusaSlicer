@@ -30,7 +30,7 @@ CommonGizmosDataPool::CommonGizmosDataPool(GLCanvas3D* canvas)
 //    m_data[c::HollowedMesh].reset(    new HollowedMesh(this));
     m_data[c::Raycaster].reset(       new Raycaster(this));
     m_data[c::ObjectClipper].reset(   new ObjectClipper(this));
-    m_data[c::SupportsClipper].reset( new SupportsClipper(this));
+    // m_data[c::SupportsClipper].reset( new SupportsClipper(this));
 
 }
 
@@ -78,13 +78,6 @@ ObjectClipper* CommonGizmosDataPool::object_clipper() const
     return (oc && oc->is_valid()) ? oc : nullptr;
 }
 
-SupportsClipper* CommonGizmosDataPool::supports_clipper() const
-{
-    SupportsClipper* sc = dynamic_cast<SupportsClipper*>(m_data.at(CommonGizmosDataID::SupportsClipper).get());
-    assert(sc);
-    return sc->is_valid() ? sc : nullptr;
-}
-
 #ifndef NDEBUG
 // Check the required resources one by one and return true if all
 // dependencies are met.
@@ -116,28 +109,18 @@ void SelectionInfo::on_update()
     const Selection& selection = get_pool()->get_canvas()->get_selection();
 
     m_model_object = nullptr;
-    m_print_object = nullptr;
 
-    if (selection.is_single_full_instance()) {
+    // BBS still keep object pointer when selection is volume
+    // if (selection.is_single_full_instance()) {
+    if (!selection.is_empty()) {
         m_model_object = selection.get_model()->objects[selection.get_object_idx()];
-        if (m_model_object)
-            m_print_object = get_pool()->get_canvas()->sla_print()->get_print_object_by_model_object_id(m_model_object->id());
-
-        m_z_shift = m_print_object ? m_print_object->get_current_elevation() : selection.get_first_volume()->get_sla_shift_z();
+        m_z_shift = selection.get_first_volume()->get_sla_shift_z();
     }
 }
 
 void SelectionInfo::on_release()
 {
     m_model_object = nullptr;
-    m_model_volume = nullptr;
-}
-
-ModelInstance *SelectionInfo::model_instance() const
-{
-    int inst_idx = get_active_instance();
-    return inst_idx < int(m_model_object->instances.size()) ?
-               m_model_object->instances[get_active_instance()] : nullptr;
 }
 
 int SelectionInfo::get_active_instance() const
@@ -154,16 +137,19 @@ void InstancesHider::on_update()
     const ModelObject* mo = get_pool()->selection_info()->model_object();
     int active_inst = get_pool()->selection_info()->get_active_instance();
     GLCanvas3D* canvas = get_pool()->get_canvas();
+    double z_min;
+    if (canvas->get_canvas_type() == GLCanvas3D::CanvasAssembleView)
+        z_min = std::numeric_limits<double>::max();
+    else
+        z_min = -SINKING_Z_THRESHOLD;
 
     if (mo && active_inst != -1) {
         canvas->toggle_model_objects_visibility(false);
-        if (!m_hide_full_scene) {
-            canvas->toggle_model_objects_visibility(true, mo, active_inst);
-            canvas->toggle_sla_auxiliaries_visibility(false, mo, active_inst);
-        }
+        canvas->toggle_model_objects_visibility(true, mo, active_inst);
+        canvas->toggle_sla_auxiliaries_visibility(false, mo, active_inst);
         canvas->set_use_clipping_planes(true);
         // Some objects may be sinking, do not show whatever is below the bed.
-        canvas->set_clipping_plane(0, ClippingPlane(Vec3d::UnitZ(), -SINKING_Z_THRESHOLD));
+        canvas->set_clipping_plane(0, ClippingPlane(Vec3d::UnitZ(), z_min));
         canvas->set_clipping_plane(1, ClippingPlane(-Vec3d::UnitZ(), std::numeric_limits<double>::max()));
 
 
@@ -175,7 +161,7 @@ void InstancesHider::on_update()
             m_clippers.clear();
             for (const TriangleMesh* mesh : meshes) {
                 m_clippers.emplace_back(new MeshClipper);
-                m_clippers.back()->set_plane(ClippingPlane(-Vec3d::UnitZ(), -SINKING_Z_THRESHOLD));
+                m_clippers.back()->set_plane(ClippingPlane(-Vec3d::UnitZ(), z_min));
                 m_clippers.back()->set_mesh(mesh->its);
             }
             m_old_meshes = meshes;
@@ -191,14 +177,6 @@ void InstancesHider::on_release()
     get_pool()->get_canvas()->set_use_clipping_planes(false);
     m_old_meshes.clear();
     m_clippers.clear();
-}
-
-void InstancesHider::set_hide_full_scene(bool hide)
-{
-    if (m_hide_full_scene != hide) {
-        m_hide_full_scene = hide;
-        on_update();
-    }
 }
 
 void InstancesHider::render_cut() const
@@ -225,11 +203,10 @@ void InstancesHider::render_cut() const
         else
             clipper->set_limiting_plane(ClippingPlane::ClipsNothing());
 
-        bool depth_test_enabled = ::glIsEnabled(GL_DEPTH_TEST);
+        glsafe(::glPushAttrib(GL_DEPTH_TEST));
         glsafe(::glDisable(GL_DEPTH_TEST));
         clipper->render_cut(mv->is_model_part() ? ColorRGBA(0.8f, 0.3f, 0.0f, 1.0f) : color_from_model_volume(*mv));
-        if (depth_test_enabled)
-            glsafe(::glEnable(GL_DEPTH_TEST));
+        glsafe(::glPopAttrib());
 
         ++clipper_id;
     }
@@ -240,46 +217,18 @@ void Raycaster::on_update()
 {
     wxBusyCursor wait;
     const ModelObject* mo = get_pool()->selection_info()->model_object();
-    const ModelVolume* mv = get_pool()->selection_info()->model_volume();
 
-    if (mo == nullptr && mv == nullptr)
+    if (mo == nullptr)
         return;
 
-    std::vector<ModelVolume*> mvs;
-    if (mv != nullptr)
-        mvs.push_back(const_cast<ModelVolume*>(mv));
-    else
-        mvs = mo->volumes;
-
     std::vector<const TriangleMesh*> meshes;
-    bool force_raycaster_regeneration = false;
-    if (wxGetApp().preset_bundle->printers.get_selected_preset().printer_technology() == ptSLA) {
-        // For sla printers we use the mesh generated by the backend
-        std::shared_ptr<const indexed_triangle_set> preview_mesh_ptr;
-        const SLAPrintObject* po = get_pool()->selection_info()->print_object();
-        if (po != nullptr)
-            preview_mesh_ptr = po->get_mesh_to_print();
-        else
-            preview_mesh_ptr.reset();
-
-        m_sla_mesh_cache = (preview_mesh_ptr != nullptr) ? TriangleMesh{ *preview_mesh_ptr } : TriangleMesh();
-
-        if (!m_sla_mesh_cache.empty()) {
-            m_sla_mesh_cache.transform(po->trafo().inverse());
-            meshes.emplace_back(&m_sla_mesh_cache);
-            force_raycaster_regeneration = true;
-        }
+    const std::vector<ModelVolume*>& mvs = mo->volumes;
+    for (const ModelVolume* mv : mvs) {
+        if (mv->is_model_part())
+            meshes.push_back(&mv->mesh());
     }
 
-    if (meshes.empty()) {
-        const std::vector<ModelVolume*>& mvs = mo->volumes;
-        for (const ModelVolume* mv : mvs) {
-            if (mv->is_model_part())
-                meshes.push_back(&mv->mesh());
-        }
-    }
-
-    if (force_raycaster_regeneration || meshes != m_old_meshes) {
+    if (meshes != m_old_meshes) {
         m_raycasters.clear();
         for (const TriangleMesh* mesh : meshes)
             m_raycasters.emplace_back(new MeshRaycaster(std::make_shared<const TriangleMesh>(*mesh)));
@@ -301,10 +250,6 @@ std::vector<const MeshRaycaster*> Raycaster::raycasters() const
     return mrcs;
 }
 
-} // namespace GUI
-
-namespace GUI {
-
 
 void ObjectClipper::on_update()
 {
@@ -315,41 +260,18 @@ void ObjectClipper::on_update()
     // which mesh should be cut?
     std::vector<const TriangleMesh*> meshes;
     std::vector<Geometry::Transformation> trafos;
-    bool force_clipper_regeneration = false;
-
-    std::unique_ptr<MeshClipper> mc;
-    Geometry::Transformation     mc_tr;
-    if (wxGetApp().preset_bundle->printers.get_selected_preset().printer_technology() == ptSLA) {
-        // For sla printers we use the mesh generated by the backend
-        const SLAPrintObject* po = get_pool()->selection_info()->print_object();
-        if (po) {
-            auto partstoslice = po->get_parts_to_slice();
-            if (! partstoslice.empty()) {
-                mc = std::make_unique<MeshClipper>();
-                mc->set_mesh(range(partstoslice));
-                mc_tr = Geometry::Transformation{po->trafo().inverse().cast<double>()};
-            }
-        }
+    for (const ModelVolume* mv : mo->volumes) {
+        meshes.emplace_back(&mv->mesh());
+        trafos.emplace_back(mv->get_transformation());
     }
 
-    if (!mc && meshes.empty()) {
-        for (const ModelVolume* mv : mo->volumes) {
-            meshes.emplace_back(&mv->mesh());
-            trafos.emplace_back(mv->get_transformation());
-        }
-    }
-
-    if (mc || force_clipper_regeneration || meshes != m_old_meshes) {
+    if (meshes != m_old_meshes) {
         m_clippers.clear();
         for (size_t i = 0; i < meshes.size(); ++i) {
             m_clippers.emplace_back(new MeshClipper, trafos[i]);
             m_clippers.back().first->set_mesh(meshes[i]->its);
         }
         m_old_meshes = std::move(meshes);
-
-        if (mc) {
-            m_clippers.emplace_back(std::move(mc), mc_tr);
-        }
 
         m_active_inst_bb_radius =
             mo->instance_bounding_box(get_pool()->selection_info()->get_active_instance()).radius();
@@ -380,8 +302,9 @@ void ObjectClipper::render_cut(const std::vector<size_t>* ignore_idxs) const
         trafo.set_offset(trafo.get_offset() + Vec3d(0., 0., sel_info->get_sla_shift()));
         clipper.first->set_plane(*m_clp);
         clipper.first->set_transformation(trafo);
-        clipper.first->set_limiting_plane(ClippingPlane(Vec3d::UnitZ(), -SINKING_Z_THRESHOLD));      
-        clipper.first->render_cut({ 1.0f, 0.37f, 0.0f, 1.0f }, &ignore_idxs_local);
+        clipper.first->set_limiting_plane(ClippingPlane(Vec3d::UnitZ(), -SINKING_Z_THRESHOLD));
+		// BBS      
+        clipper.first->render_cut({ 0.25f, 0.25f, 0.25f, 1.0f }, &ignore_idxs_local);
         clipper.first->render_contour({ 1.f, 1.f, 1.f, 1.f },  &ignore_idxs_local);
   
         // Now update the ignore idxs. Find the first element belonging to the next clipper,
@@ -438,15 +361,32 @@ void ObjectClipper::set_position_by_ratio(double pos, bool keep_normal)
     int active_inst = get_pool()->selection_info()->get_active_instance();
     double z_shift = get_pool()->selection_info()->get_sla_shift();
 
-    Vec3d normal = (keep_normal && m_clp) ? m_clp->get_normal() : -wxGetApp().plater()->get_camera().get_dir_forward();
-    const Vec3d& center = mo->instances[active_inst]->get_offset() + Vec3d(0., 0., z_shift);
+    //Vec3d camera_dir = wxGetApp().plater()->get_camera().get_dir_forward();
+    //if (abs(camera_dir(0)) > EPSILON || abs(camera_dir(1)) > EPSILON)
+    //    camera_dir(2) = 0;
+
+    Vec3d normal = (keep_normal && m_clp) ? m_clp->get_normal() : /*-camera_dir;*/ -wxGetApp().plater()->get_camera().get_dir_forward();
+    Vec3d center;
+
+    if (get_pool()->get_canvas()->get_canvas_type() == GLCanvas3D::CanvasAssembleView) {
+        const SelectionInfo* sel_info = get_pool()->selection_info();
+        auto trafo = mo->instances[sel_info->get_active_instance()]->get_assemble_transformation();
+        auto offset_to_assembly = mo->instances[0]->get_offset_to_assembly();
+        center = trafo.get_offset() + offset_to_assembly * (GLVolume::explosion_ratio - 1.0);
+    }
+    else {
+        center = mo->instances[active_inst]->get_offset() + Vec3d(0., 0., z_shift);
+    }
+
     float dist = normal.dot(center);
 
     if (pos < 0.)
         pos = m_clp_ratio;
 
     m_clp_ratio = pos;
-    m_clp.reset(new ClippingPlane(normal, (dist - (-m_active_inst_bb_radius) - m_clp_ratio * 2*m_active_inst_bb_radius)));
+
+    m_clp.reset(new ClippingPlane(normal, (dist - (-m_active_inst_bb_radius) - m_clp_ratio * 2 * m_active_inst_bb_radius)));
+
     get_pool()->get_canvas()->set_as_dirty();
 }
 
@@ -471,81 +411,169 @@ void ObjectClipper::set_behavior(bool hide_clipped, bool fill_cut, double contou
 }
 
 
-void SupportsClipper::on_update()
+using namespace AssembleViewDataObjects;
+AssembleViewDataPool::AssembleViewDataPool(GLCanvas3D* canvas)
+    : m_canvas(canvas)
 {
-    const ModelObject* mo = get_pool()->selection_info()->model_object();
-    bool is_sla = wxGetApp().preset_bundle->printers.get_selected_preset().printer_technology() == ptSLA;
-    if (! mo || ! is_sla)
-        return;
+    using c = AssembleViewDataID;
+    m_data[c::ModelObjectsInfo].reset(new ModelObjectsInfo(this));
+    m_data[c::ModelObjectsClipper].reset(new ModelObjectsClipper(this));
+}
 
-    const SLAPrintObject* po = get_pool()->selection_info()->print_object();
-    if (po == nullptr)
-        return;
-
-    if (po->get_mesh_to_print() == nullptr) {
-        // The object has been not sliced yet. We better dump the cached data.
-        m_supports_clipper.reset();
-        m_pad_clipper.reset();
-        return;
-    }
-
-    const TriangleMesh& support_mesh = po->support_mesh();
-    if (support_mesh.empty()) {
-        // The supports are not available yet. We better dump the cached data.
-        m_supports_clipper.reset();
-    }
-    else {
-        m_supports_clipper.reset(new MeshClipper);
-        m_supports_clipper->set_mesh(support_mesh.its);
-    }
-
-    const TriangleMesh& pad_mesh = po->pad_mesh();
-    if (pad_mesh.empty()) {
-        // The supports are not available yet. We better dump the cached data.
-        m_pad_clipper.reset();
-    }
-    else {
-        m_pad_clipper.reset(new MeshClipper);
-        m_pad_clipper->set_mesh(pad_mesh.its);
+void AssembleViewDataPool::update(AssembleViewDataID required)
+{
+    assert(check_dependencies(required));
+    for (auto& [id, data] : m_data) {
+        if (int(required) & int(AssembleViewDataID(id)))
+            data->update();
+        else
+            if (data->is_valid())
+                data->release();
     }
 }
 
 
-void SupportsClipper::on_release()
+ModelObjectsInfo* AssembleViewDataPool::model_objects_info() const
 {
-    m_supports_clipper.reset();
-    m_pad_clipper.reset();
-    m_print_object_idx = -1;
+    ModelObjectsInfo* sel_info = dynamic_cast<ModelObjectsInfo*>(m_data.at(AssembleViewDataID::ModelObjectsInfo).get());
+    assert(sel_info);
+    return sel_info->is_valid() ? sel_info : nullptr;
 }
 
-void SupportsClipper::render_cut() const
+
+ModelObjectsClipper* AssembleViewDataPool::model_objects_clipper() const
 {
-    const CommonGizmosDataObjects::ObjectClipper* ocl = get_pool()->object_clipper();
-    if (ocl->get_position() == 0.)
-        return;
+    ModelObjectsClipper* oc = dynamic_cast<ModelObjectsClipper*>(m_data.at(AssembleViewDataID::ModelObjectsClipper).get());
+    // ObjectClipper is used from outside the gizmos to report current clipping plane.
+    // This function can be called when oc is nullptr.
+    return (oc && oc->is_valid()) ? oc : nullptr;
+}
 
-    const SLAPrintObject* po = get_pool()->selection_info()->print_object();
-    if (po == nullptr)
-        return;
+#ifndef NDEBUG
+// Check the required resources one by one and return true if all
+// dependencies are met.
+bool AssembleViewDataPool::check_dependencies(AssembleViewDataID required) const
+{
+    // This should iterate over currently required data. Each of them should
+    // be asked about its dependencies and it must check that all dependencies
+    // are also in required and before the current one.
+    for (auto& [id, data] : m_data) {
+        // in case we don't use this, the deps are irrelevant
+        if (!(int(required) & int(AssembleViewDataID(id))))
+            continue;
 
-    Geometry::Transformation po_trafo(po->trafo());
 
-    const SelectionInfo* sel_info = get_pool()->selection_info();
-    Geometry::Transformation inst_trafo = sel_info->model_object()->instances[sel_info->get_active_instance()]->get_transformation();
-    inst_trafo = Geometry::Transformation(inst_trafo.get_matrix() * po_trafo.get_matrix().inverse());
-    inst_trafo.set_offset(inst_trafo.get_offset() + Vec3d(0.0, 0.0, sel_info->get_sla_shift()));
-
-    if (m_supports_clipper != nullptr) {
-        m_supports_clipper->set_plane(*ocl->get_clipping_plane());
-        m_supports_clipper->set_transformation(inst_trafo);
-        m_supports_clipper->render_cut({ 1.0f, 0.f, 0.37f, 1.0f });
+        AssembleViewDataID deps = data->get_dependencies();
+        assert(int(deps) == (int(deps) & int(required)));
     }
 
-    if (m_pad_clipper != nullptr) {
-        m_pad_clipper->set_plane(*ocl->get_clipping_plane());
-        m_pad_clipper->set_transformation(inst_trafo);
-        m_pad_clipper->render_cut({ 0.6f, 0.f, 0.222f, 1.0f });
+
+return true;
+}
+#endif // NDEBUG
+
+
+
+
+void ModelObjectsInfo::on_update()
+{
+    if (!get_pool()->get_canvas()->get_model()->objects.empty()) {
+        m_model_objects = get_pool()->get_canvas()->get_model()->objects;
     }
+    else {
+        m_model_objects.clear();
+    }
+}
+
+void ModelObjectsInfo::on_release()
+{
+    m_model_objects.clear();
+}
+
+//int ModelObjectsInfo::get_active_instance() const
+//{
+//    const Selection& selection = get_pool()->get_canvas()->get_selection();
+//    return selection.get_instance_idx();
+//}
+
+
+void ModelObjectsClipper::on_update()
+{
+    const ModelObjectPtrs model_objects = get_pool()->model_objects_info()->model_objects();
+    if (model_objects.empty())
+        return;
+
+    // which mesh should be cut?
+    std::vector<const TriangleMesh*> meshes;
+
+    if (meshes.empty())
+        for (auto mo : model_objects) {
+            for (const ModelVolume* mv : mo->volumes)
+                meshes.push_back(&mv->mesh());
+        }
+
+    if (meshes != m_old_meshes) {
+        m_clippers.clear();
+        for (const TriangleMesh* mesh : meshes) {
+            m_clippers.emplace_back(new MeshClipper);
+            m_clippers.back()->set_mesh(mesh->its);
+        }
+        m_old_meshes = meshes;
+
+        m_active_inst_bb_radius = get_pool()->get_canvas()->volumes_bounding_box().radius();
+    }
+}
+
+
+void ModelObjectsClipper::on_release()
+{
+    m_clippers.clear();
+    m_old_meshes.clear();
+    m_clp.reset();
+    m_clp_ratio = 0.;
+
+}
+
+void ModelObjectsClipper::render_cut() const
+{
+    if (m_clp_ratio == 0.)
+        return;
+    const ModelObjectPtrs model_objects = get_pool()->model_objects_info()->model_objects();
+
+    size_t clipper_id = 0;
+    for (const ModelObject* mo : model_objects) {
+        Geometry::Transformation assemble_objects_trafo = mo->instances[0]->get_assemble_transformation();
+        auto offset_to_assembly = mo->instances[0]->get_offset_to_assembly();
+        for (const ModelVolume* mv : mo->volumes) {
+            Geometry::Transformation vol_trafo = mv->get_transformation();
+            Geometry::Transformation trafo = assemble_objects_trafo * vol_trafo;
+            trafo.set_offset(trafo.get_offset() + vol_trafo.get_offset() * (GLVolume::explosion_ratio - 1.0) + offset_to_assembly * (GLVolume::explosion_ratio - 1.0));
+
+            auto& clipper = m_clippers[clipper_id];
+            clipper->set_plane(*m_clp);
+            clipper->set_transformation(trafo);
+            // BBS
+            clipper->render_cut({0.25f, 0.25f, 0.25f, 1.0f});
+
+            ++clipper_id;
+        }
+    }
+}
+
+
+void ModelObjectsClipper::set_position(double pos, bool keep_normal)
+{
+    Vec3d normal = (keep_normal && m_clp) ? m_clp->get_normal() : -wxGetApp().plater()->get_camera().get_dir_forward();
+    const Vec3d& center = get_pool()->get_canvas()->volumes_bounding_box().center();
+    float dist = normal.dot(center);
+
+    if (pos < 0.)
+        pos = m_clp_ratio;
+
+    m_clp_ratio = pos;
+    m_clp.reset(new ClippingPlane(normal, (dist - (-m_active_inst_bb_radius * GLVolume::explosion_ratio) - m_clp_ratio * 2 * m_active_inst_bb_radius * GLVolume::explosion_ratio)));
+    get_pool()->get_canvas()->set_as_dirty();
+
 }
 
 

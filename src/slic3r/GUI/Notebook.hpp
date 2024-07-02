@@ -1,15 +1,14 @@
-///|/ Copyright (c) Prusa Research 2021 - 2022 Oleksandra Iushchenko @YuSanka, Lukáš Matěna @lukasmatena, Lukáš Hejl @hejllukas
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Notebook_hpp_
 #define slic3r_Notebook_hpp_
 
-#ifdef _WIN32
+//#ifdef _WIN32
 
 #include <wx/bookctrl.h>
+#include <wx/sizer.h>
 
+class ModeSizer;
 class ScalableButton;
+class Button;
 
 // custom message the ButtonsListCtrl sends to its parent (Notebook) to notify a selection change:
 wxDECLARE_EVENT(wxCUSTOMEVT_NOTEBOOK_SEL_CHANGED, wxCommandEvent);
@@ -17,27 +16,29 @@ wxDECLARE_EVENT(wxCUSTOMEVT_NOTEBOOK_SEL_CHANGED, wxCommandEvent);
 class ButtonsListCtrl : public wxControl
 {
 public:
-    ButtonsListCtrl(wxWindow* parent);
+    // BBS
+    ButtonsListCtrl(wxWindow* parent, wxBoxSizer* side_tools = NULL);
     ~ButtonsListCtrl() {}
 
     void OnPaint(wxPaintEvent&);
     void SetSelection(int sel);
+    void UpdateMode();
     void Rescale();
-    void OnColorsChanged();
-    bool InsertPage(size_t n, const wxString& text, bool bSelect = false, const std::string& bmp_name = "");
+    bool InsertPage(size_t n, const wxString &text, bool bSelect = false, const std::string &bmp_name = "", const std::string &inactive_bmp_name = "");
     void RemovePage(size_t n);
     bool SetPageImage(size_t n, const std::string& bmp_name) const;
     void SetPageText(size_t n, const wxString& strText);
     wxString GetPageText(size_t n) const;
 
 private:
-    wxWindow*                       m_parent;
     wxFlexGridSizer*                m_buttons_sizer;
     wxBoxSizer*                     m_sizer;
-    std::vector<ScalableButton*>    m_pageButtons;
+    // BBS: use Button
+    std::vector<Button*>            m_pageButtons;
     int                             m_selection {-1};
     int                             m_btn_margin;
     int                             m_line_margin;
+    //ModeSizer*                      m_mode_sizer {nullptr};
 };
 
 class Notebook: public wxBookCtrlBase
@@ -47,22 +48,26 @@ public:
                  wxWindowID winid = wxID_ANY,
                  const wxPoint & pos = wxDefaultPosition,
                  const wxSize & size = wxDefaultSize,
+                // BBS
+                 wxBoxSizer* side_tools = NULL,
                  long style = 0)
     {
         Init();
-        Create(parent, winid, pos, size, style);
+        Create(parent, winid, pos, size, side_tools, style);
     }
 
     bool Create(wxWindow * parent,
                 wxWindowID winid = wxID_ANY,
                 const wxPoint & pos = wxDefaultPosition,
                 const wxSize & size = wxDefaultSize,
+                // BBS
+                wxBoxSizer* side_tools = NULL,
                 long style = 0)
     {
         if (!wxBookCtrlBase::Create(parent, winid, pos, size, style | wxBK_TOP))
             return false;
 
-        m_bookctrl = new ButtonsListCtrl(this);
+        m_bookctrl = new ButtonsListCtrl(this, side_tools);
 
         wxSizer* mainSizer = new wxBoxSizer(IsVertical() ? wxVERTICAL : wxHORIZONTAL);
 
@@ -80,7 +85,7 @@ public:
         SetSizer(mainSizer);
 
         this->Bind(wxCUSTOMEVT_NOTEBOOK_SEL_CHANGED, [this](wxCommandEvent& evt)
-        {                    
+        {
             if (int page_idx = evt.GetId(); page_idx >= 0)
                 SetSelection(page_idx);
         });
@@ -97,7 +102,7 @@ public:
     // by this control) and show it immediately.
     bool ShowNewPage(wxWindow * page)
     {
-        return AddPage(page, wxString(), ""/*true *//* select it */);
+        return AddPage(page, wxString(), "", "");
     }
 
 
@@ -133,10 +138,11 @@ public:
     bool AddPage(wxWindow* page,
                  const wxString& text,
                  const std::string& bmp_name,
+                 const std::string& inactive_bmp_name,
                  bool bSelect = false)
     {
         DoInvalidateBestSize();
-        return InsertPage(GetPageCount(), page, text, bmp_name, bSelect);
+        return InsertPage(GetPageCount(), page, text, bmp_name, inactive_bmp_name, bSelect);
     }
 
     // Page management
@@ -161,12 +167,13 @@ public:
                     wxWindow * page,
                     const wxString & text,
                     const std::string& bmp_name = "",
+                    const std::string& inactive_bmp_name = "",
                     bool bSelect = false)
     {
         if (!wxBookCtrlBase::InsertPage(n, page, text, bSelect))
             return false;
 
-        GetBtnsListCtrl()->InsertPage(n, text, bSelect, bmp_name);
+        GetBtnsListCtrl()->InsertPage(n, text, bSelect, bmp_name, inactive_bmp_name);
 
         if (bSelect)
             SetSelection(n);
@@ -176,13 +183,23 @@ public:
 
     virtual int SetSelection(size_t n) override
     {
-        GetBtnsListCtrl()->SetSelection(n);
         int ret = DoSetSelection(n, SetSelection_SendEvent);
+        int new_sel = GetSelection();
+        //check the new_sel firstly
+        if (new_sel != n) {
+            //not allowed, skip it
+            return ret;
+        }
+        GetBtnsListCtrl()->SetSelection(n);
 
         // check that only the selected page is visible and others are hidden:
-        for (size_t page = 0; page < m_pages.size(); page++)
-            if (page != n)
+        for (size_t page = 0; page < m_pages.size(); page++) {
+            wxWindow* win_a = GetPage(page);
+            wxWindow* win_b = GetPage(n);
+            if (page != n && GetPage(page) != GetPage(n)) {
                 m_pages[page]->Hide();
+            }
+        }
 
         return ret;
     }
@@ -235,14 +252,14 @@ public:
 
     ButtonsListCtrl* GetBtnsListCtrl() const { return static_cast<ButtonsListCtrl*>(m_bookctrl); }
 
+    void UpdateMode()
+    {
+        GetBtnsListCtrl()->UpdateMode();
+    }
+
     void Rescale()
     {
         GetBtnsListCtrl()->Rescale();
-    }
-
-    void OnColorsChanged()
-    {
-        GetBtnsListCtrl()->OnColorsChanged();
     }
 
     void OnNavigationKey(wxNavigationKeyEvent& event)
@@ -374,28 +391,13 @@ protected:
     }
 
 private:
-    void Init()
-    {
-        // We don't need any border as we don't have anything to separate the
-        // page contents from.
-        SetInternalBorder(0);
-
-        // No effects by default.
-        m_showEffect =
-        m_hideEffect = wxSHOW_EFFECT_NONE;
-
-        m_showTimeout =
-        m_hideTimeout = 0;
-    }
+    void Init();
 
     wxShowEffect m_showEffect,
                  m_hideEffect;
 
     unsigned m_showTimeout,
              m_hideTimeout;
-
-    ButtonsListCtrl* m_ctrl{ nullptr };
-
 };
-#endif // _WIN32
+//#endif // _WIN32
 #endif // slic3r_Notebook_hpp_

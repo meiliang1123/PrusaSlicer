@@ -4,9 +4,7 @@
 ///|/
 #include "SLAImportJob.hpp"
 
-#include "libslic3r/SLAPrint.hpp"
 #include "libslic3r/Format/SL1.hpp"
-#include "libslic3r/Format/SLAArchiveReader.hpp"
 
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -29,7 +27,7 @@ public:
     indexed_triangle_set mesh;
     DynamicPrintConfig   profile;
     wxString             path;
-    Quality              quality = Quality::Balanced;
+    Vec2i32                win = {2, 2};
     std::string          err;
     ConfigSubstitutions config_substitutions;
 
@@ -48,8 +46,6 @@ SLAImportJob::~SLAImportJob() = default;
 
 void SLAImportJob::process(Ctl &ctl)
 {
-    if (p->path.empty() || ! p->err.empty()) return;
-
     auto statustxt = _u8L("Importing SLA archive");
     ctl.update_status(0, statustxt);
 
@@ -59,36 +55,28 @@ void SLAImportJob::process(Ctl &ctl)
         return !ctl.was_canceled();
     };
 
-    std::string path = p->path.ToUTF8().data();
-    std::string format_id = p->import_dlg->get_archive_format();
+    if (p->path.empty()) return;
 
+    std::string path = p->path.ToUTF8().data();
     try {
         switch (p->sel) {
         case Sel::modelAndProfile:
         case Sel::modelOnly:
-            p->config_substitutions = import_sla_archive(path,
-                                                         format_id,
-                                                         p->mesh,
-                                                         p->profile,
-                                                         p->quality, progr);
+            p->config_substitutions = import_sla_archive(path, p->win, p->mesh, p->profile, progr);
             break;
         case Sel::profileOnly:
-            p->config_substitutions = import_sla_archive(path, format_id,
-                                                         p->profile);
+            p->config_substitutions = import_sla_archive(path, p->profile);
             break;
         }
     } catch (MissingProfileError &) {
-        p->err = _u8L("The SLA archive doesn't contain any presets. "
-                      "Please activate some SLA printer preset first before "
-                      "importing that SLA archive.");
-    } catch (ReaderUnimplementedError &) {
-        p->err = _u8L("Import is unavailable for this archive format.");
-    }catch (std::exception &ex) {
+        p->err = _L("The SLA archive doesn't contain any presets. "
+                    "Please activate some SLA printer preset first before importing that SLA archive.").ToStdString();
+    } catch (std::exception &ex) {
         p->err = ex.what();
     }
 
     ctl.update_status(100, ctl.was_canceled() ? _u8L("Importing canceled.") :
-                                                _u8L("Importing done."));
+                                        _u8L("Importing done."));
 }
 
 void SLAImportJob::reset()
@@ -96,25 +84,19 @@ void SLAImportJob::reset()
     p->sel     = Sel::modelAndProfile;
     p->mesh    = {};
     p->profile = p->plater->sla_print().full_print_config();
-    p->quality = SLAImportQuality::Balanced;
+    p->win     = {2, 2};
     p->path.Clear();
-    p->err     = "";
 }
 
 void SLAImportJob::prepare()
 {
     reset();
 
-    const std::string path  = p->import_dlg->get_path();
-    auto nm    = wxFileName(from_u8(path));
-    p->path    = !nm.Exists(wxFILE_EXISTS_REGULAR) ? "" : nm.GetFullPath();
-    if (p->path.empty()) {
-        p->err = _u8L("The file does not exist.");
-        return;
-    }
-    p->sel     = p->import_dlg->get_selection();
-    p->quality = p->import_dlg->get_quality();
-
+    auto path = p->import_dlg->get_path();
+    auto nm = wxFileName(path);
+    p->path = !nm.Exists(wxFILE_EXISTS_REGULAR) ? "" : nm.GetFullPath();
+    p->sel  = p->import_dlg->get_selection();
+    p->win  = p->import_dlg->get_marchsq_windowsize();
     p->config_substitutions.clear();
 }
 
@@ -136,8 +118,8 @@ void SLAImportJob::finalize(bool canceled, std::exception_ptr &eptr)
         p->plater->get_notification_manager()->push_notification(
         NotificationType::CustomNotification,
         NotificationManager::NotificationLevel::WarningNotificationLevel,
-            _u8L("The imported SLA archive did not contain any presets. "
-               "The current SLA presets were used as fallback."));
+            _L("The imported SLA archive did not contain any presets. "
+               "The current SLA presets were used as fallback.").ToStdString());
     }
 
     if (p->sel != Sel::modelOnly) {
@@ -159,27 +141,14 @@ void SLAImportJob::finalize(bool canceled, std::exception_ptr &eptr)
         config.apply(SLAFullPrintConfig::defaults());
         config += std::move(p->profile);
 
-        if (Preset::printer_technology(config) == ptSLA) {
-            wxGetApp().preset_bundle->load_config_model(name, std::move(config));
-            p->plater->notify_about_installed_presets();;
-            wxGetApp().load_current_presets();
-        } else {
-            p->plater->get_notification_manager()->push_notification(
-                NotificationType::CustomNotification,
-                NotificationManager::NotificationLevel::WarningNotificationLevel,
-                _u8L("The profile in the imported archive is corrupted and will not be loaded."));
-        }
+        wxGetApp().preset_bundle->load_config_model(name, std::move(config));
+        wxGetApp().load_current_presets();
     }
 
     if (!p->mesh.empty()) {
         bool is_centered = false;
         p->plater->sidebar().obj_list()->load_mesh_object(TriangleMesh{std::move(p->mesh)},
                                                           name, is_centered);
-    } else if (p->sel == Sel::modelOnly || p->sel == Sel::modelAndProfile) {
-        p->plater->get_notification_manager()->push_notification(
-            NotificationType::CustomNotification,
-            NotificationManager::NotificationLevel::WarningNotificationLevel,
-            _u8L("No object could be retrieved from the archive. The slices might be corrupted or missing."));
     }
 
     if (! p->config_substitutions.empty())

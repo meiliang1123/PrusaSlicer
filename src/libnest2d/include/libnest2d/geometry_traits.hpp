@@ -176,12 +176,13 @@ public:
 
     using Tag = BoxTag;
     using PointType = P;
+    bool defined = false;
 
     inline _Box(const P& center = {TCoord<P>(0), TCoord<P>(0)}):
         _Box(TCoord<P>(0), TCoord<P>(0), center) {}
     
     inline _Box(const P& p, const P& pp):
-        PointPair<P>({p, pp}) {}
+        PointPair<P>({ p, pp }) { defined = true; }
     
     inline _Box(TCoord<P> width, TCoord<P> height,
                 const P& p = {TCoord<P>(0), TCoord<P>(0)});/*:
@@ -198,11 +199,23 @@ public:
 
     inline P center() const BP2D_NOEXCEPT;
 
-    template<class Unit = TCompute<P>>
+    template<class Unit = TCompute<P>> 
     inline Unit area() const BP2D_NOEXCEPT {
-        constexpr TCoord<P> Zero{0};
-        Unit s = width() < Zero || height() < Zero ? Unit(-1) : Unit(1);
-        return s * libnest2d::abs(Unit(width()) * height());
+        return Unit(width())*height();
+    }
+
+    _Box intersection(_Box other) {
+        _Box inter;
+        inter.p1.x() = std::max(p1.x(), other.p1.x());
+        inter.p1.y() = std::max(p1.y(), other.p1.y());
+        inter.p2.x() = std::min(p2.x(), other.p2.x());
+        inter.p2.y() = std::min(p2.y(), other.p2.y());
+        inter.defined = true;
+        if (inter.p2.y() < inter.p1.y() || inter.p2.x() < inter.p1.x()) {
+            inter.p2 = inter.p1;
+            inter.defined = false;
+        }            
+        return inter;
     }
     
     static inline _Box infinite(const P &center = {TCoord<P>(0), TCoord<P>(0)});
@@ -643,7 +656,7 @@ inline std::string toString(const S& /*sh*/)
 }
 
 template<Formats, class S>
-inline std::string serialize(const S& /*sh*/, double /*scale*/=1)
+inline std::string serialize(const S& /*sh*/, double /*scale*/=1, std::string fill = "none", std::string stroke = "black", float stroke_width = 1)
 {
     static_assert(always_false<S>::value,
                   "shapelike::serialize() unimplemented!");
@@ -871,7 +884,7 @@ template<class P> auto rcend(const P& p) -> decltype(_backward(cbegin(p)))
 
 template<class P> TPoint<P> front(const P& p) { return *shapelike::cbegin(p); }
 template<class P> TPoint<P> back (const P& p) {
-    return *std::prev(shapelike::cend(p));
+    return *backward(shapelike::cend(p));
 }
 
 // Optional, does nothing by default
@@ -935,6 +948,10 @@ inline _Box<TPoint<S>> boundingBox(const S& sh)
 
 template<class P> _Box<P> boundingBox(const _Box<P>& bb1, const _Box<P>& bb2 )
 {
+    if (!bb1.defined)
+        return bb2;
+    if (!bb2.defined)
+        return bb1;
     auto& pminc = bb1.minCorner();
     auto& pmaxc = bb1.maxCorner();
     auto& iminc = bb2.minCorner();

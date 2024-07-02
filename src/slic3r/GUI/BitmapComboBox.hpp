@@ -1,14 +1,8 @@
-///|/ Copyright (c) Prusa Research 2021 - 2022 Oleksandra Iushchenko @YuSanka
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_BitmapComboBox_hpp_
 #define slic3r_BitmapComboBox_hpp_
 
 #include <wx/bmpcbox.h>
 #include <wx/gdicmn.h>
-
-#include "Widgets/ComboBox.hpp"
 
 #include "GUI_Utils.hpp"
 
@@ -19,8 +13,7 @@ namespace Slic3r {
 namespace GUI {
 
 // BitmapComboBox used to presets list on Sidebar and Tabs
-//class BitmapComboBox : public wxBitmapComboBox
-class BitmapComboBox : public ::ComboBox
+class BitmapComboBox : public wxBitmapComboBox
 {
 public:
 BitmapComboBox(wxWindow* parent,
@@ -31,20 +24,34 @@ BitmapComboBox(wxWindow* parent,
     int n = 0,
     const wxString choices[] = NULL,
     long style = 0);
-#if 0
 ~BitmapComboBox();
 
 #ifdef _WIN32
     int Append(const wxString& item);
 #endif
-    int Append(const wxString& item, const wxBitmapBundle& bitmap)
+    int Append(const wxString& item, const wxBitmap& bitmap)
     {
         return wxBitmapComboBox::Append(item, bitmap);
     }
 
 protected:
 
-//#ifdef _WIN32
+#ifdef __APPLE__
+/* For PresetComboBox we use bitmaps that are created from images that are already scaled appropriately for Retina
+ * (Contrary to the intuition, the `scale` argument for Bitmap's constructor doesn't mean
+ * "please scale this to such and such" but rather
+ * "the wxImage is already sized for backing scale such and such". )
+ * Unfortunately, the constructor changes the size of wxBitmap too.
+ * Thus We need to use unscaled size value for bitmaps that we use
+ * to avoid scaled size of control items.
+ * For this purpose control drawing methods and
+ * control size calculation methods (virtual) are overridden.
+ **/
+bool OnAddBitmap(const wxBitmap& bitmap) override;
+void OnDrawItem(wxDC& dc, const wxRect& rect, int item, int flags) const override;
+#endif
+
+#ifdef _WIN32
 bool MSWOnDraw(WXDRAWITEMSTRUCT* item) override;
 void DrawBackground_(wxDC& dc, const wxRect& rect, int WXUNUSED(item), int flags) const;
 public:

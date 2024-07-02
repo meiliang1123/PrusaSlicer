@@ -5,6 +5,7 @@
 #include <fstream>
 #include <string>
 
+#include <boost/filesystem.hpp>
 #include <libnest2d/nester.hpp>
 
 namespace libnest2d { namespace svg {
@@ -27,14 +28,16 @@ public:
         OrigoLocation origo_location;
         Coord mm_in_coord_units;
         double width, height;
+        double        x0, y0;
         Config():
             origo_location(BOTTOMLEFT), mm_in_coord_units(1000000),
-            width(500), height(500) {}
+            width(500), height(500),x0(100) {}
 
     };
 
-private:
     Config conf_;
+
+private:
     std::vector<std::string> svg_layers_;
     bool finished_ = false;
 public:
@@ -42,34 +45,42 @@ public:
     SVGWriter(const Config& conf = Config()):
         conf_(conf) {}
 
-    void setSize(const Box& box) {
-        conf_.height = static_cast<double>(box.height()) /
+    void setSize(const Box &box)    {
+        conf_.x0     = box.width() / 5;
+        conf_.x0     = box.height() / 5;
+        conf_.height = static_cast<double>(box.height() + conf_.y0*2) /
                 conf_.mm_in_coord_units;
-        conf_.width = static_cast<double>(box.width()) /
+        conf_.width  = static_cast<double>(box.width() + conf_.x0*2) /
                 conf_.mm_in_coord_units;
     }
     
-    void writeShape(RawShape tsh) {
+    void writeShape(RawShape tsh, std::string fill = "none", std::string stroke = "black", float stroke_width = 1) {
         if(svg_layers_.empty()) addLayer();
         if(conf_.origo_location == BOTTOMLEFT) {
             auto d = static_cast<Coord>(
                 std::round(conf_.height*conf_.mm_in_coord_units) );
 
             auto& contour = shapelike::contour(tsh);
-            for(auto& v : contour) setY(v, -getY(v) + d);
+            for (auto &v : contour) {
+                setX(v, getX(v) + conf_.x0); // right shift so we can draw outside the bounding box
+                setY(v, -getY(v) + d + conf_.y0);
+            }
 
             auto& holes = shapelike::holes(tsh);
-            for(auto& h : holes) for(auto& v : h) setY(v, -getY(v) + d);
-            
+            for (auto &h : holes)
+                for (auto &v : h) {
+                    setX(v, getX(v) + conf_.x0);
+                    setY(v, -getY(v) + d + conf_.y0);
+                }
         }
         currentLayer() +=
             shapelike::serialize<Formats::SVG>(tsh,
-                                               1.0 / conf_.mm_in_coord_units) +
+                                               1.0 / conf_.mm_in_coord_units, fill, stroke, stroke_width) +
             "\n";
     }
 
-    void writeItem(const Item& item) {
-        writeShape(item.transformedShape());
+    void writeItem(const Item& item, std::string fill = "none", std::string stroke = "black", float stroke_width = 1) {
+        writeShape(item.transformedShape(), fill, stroke, stroke_width);
     }
 
     void writePackGroup(const PackGroup& result) {
@@ -94,6 +105,15 @@ public:
         writePackGroup(pg);
     }
 
+    void draw_text(float x,float y, const std::string text, const std::string color, int font_size)
+    {
+        char s[500];
+        sprintf(s,
+            "<text x=\"%f\" y=\"%f\" font-family=\"sans-serif\" font-size=\"%dpx\" fill=\"%s\">%s</text>\n",
+            x,y, font_size, color.c_str(), text.c_str());
+        currentLayer() += s;
+    }
+
     void addLayer() {
         svg_layers_.emplace_back(header());
         finished_ = false;
@@ -114,6 +134,22 @@ public:
             if(out.is_open()) out << lyr;
             if(lyrc == last && !finished_) out << "\n</svg>\n";
             out.flush(); out.close(); lyrc++;
+        };
+    }
+
+    // save svg in utf-8 file name
+    void save(const boost::filesystem::path &filepath)
+    {
+        size_t lyrc = svg_layers_.size() > 1 ? 1 : 0;
+        size_t last = svg_layers_.size() > 1 ? svg_layers_.size() : 0;
+
+        for (auto &lyr : svg_layers_) {
+            boost::filesystem::ofstream out(filepath, std::fstream::out);
+            if (out.is_open()) out << lyr;
+            if (lyrc == last && !finished_) out << "\n</svg>\n";
+            out.flush();
+            out.close();
+            lyrc++;
         };
     }
 

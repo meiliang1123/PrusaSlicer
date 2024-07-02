@@ -23,6 +23,7 @@ public:
     using DefaultIter = typename ItemGroup::const_iterator;
 
     class PackResult {
+    public:
         Item *item_ptr_;
         Vertex move_;
         Radians rot_;
@@ -42,6 +43,9 @@ public:
     public:
         operator bool() { return item_ptr_ != nullptr; }
         double overfit() const { return overfit_; }
+        double score_ = -1.11;
+        double score() { return score_; }
+        int plate_id = 0;   // BBS
     };
 
     inline PlacerBoilerplate(const BinType& bin, unsigned cap = 50): bin_(bin)
@@ -60,12 +64,8 @@ public:
     }
 
     template<class Range = ConstItemRange<DefaultIter>>
-    bool pack(Item& item, const Range& rem = Range()) {
+    PackResult pack(Item& item, const Range& rem = Range()) {
         auto&& r = static_cast<Subclass*>(this)->trypack(item, rem);
-        if(r) {
-            items_.emplace_back(*(r.item_ptr_));
-            farea_valid_ = false;
-        }
         return r;
     }
 
@@ -76,9 +76,10 @@ public:
 
     void accept(PackResult& r) {
         if(r) {
-            r.item_ptr_->translation(r.move_);
-            r.item_ptr_->rotation(r.rot_);
-            items_.emplace_back(*(r.item_ptr_));
+            //r.item_ptr_->translation(r.move_);
+            //r.item_ptr_->rotation(r.rot_);
+            //items_.emplace_back(*(r.item_ptr_));
+            static_cast<Subclass*>(this)->accept(r);
             farea_valid_ = false;
         }
     }
@@ -92,6 +93,17 @@ public:
 
     inline void clearItems() {
         items_.clear();
+        farea_valid_ = false;
+    }
+
+    //clearFunc: will be cleared if return true
+    inline void clearItems(const std::function<bool(const Item &itm)> &clearFunc)
+    {
+        ItemGroup newGroup;
+        for (auto &i : items_) {
+            if (clearFunc(i.get()) == false) { newGroup.push_back(i); }
+        }
+        std::swap(newGroup, items_);
         farea_valid_ = false;
     }
 
@@ -109,7 +121,7 @@ public:
         return farea_;
     }
 
-protected:
+public:
 
     BinType bin_;
     ItemGroup items_;

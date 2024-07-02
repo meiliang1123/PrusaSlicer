@@ -6,12 +6,8 @@
 #include "OpenGLManager.hpp"
 
 #include "GUI.hpp"
-#if !SLIC3R_OPENGL_ES
-#include "GUI_Init.hpp"
-#endif // !SLIC3R_OPENGL_ES
 #include "I18N.hpp"
 #include "3DScene.hpp"
-#include "format.hpp"
 
 #include "libslic3r/Platform.hpp"
 
@@ -38,24 +34,23 @@ namespace GUI {
 std::string gl_get_string_safe(GLenum param, const std::string& default_value)
 {
     const char* value = (const char*)::glGetString(param);
-    glcheck();
     return std::string((value != nullptr) ? value : default_value);
 }
 
-const std::string& OpenGLManager::GLInfo::get_version_string() const
+const std::string& OpenGLManager::GLInfo::get_version() const
 {
     if (!m_detected)
         detect();
 
-    return m_version_string;
+    return m_version;
 }
 
-const std::string& OpenGLManager::GLInfo::get_glsl_version_string() const
+const std::string& OpenGLManager::GLInfo::get_glsl_version() const
 {
     if (!m_detected)
         detect();
 
-    return m_glsl_version_string;
+    return m_glsl_version;
 }
 
 const std::string& OpenGLManager::GLInfo::get_vendor() const
@@ -76,7 +71,7 @@ const std::string& OpenGLManager::GLInfo::get_renderer() const
 
 bool OpenGLManager::GLInfo::is_mesa() const
 {
-    return m_version_is_mesa;
+    return boost::icontains(m_version, "mesa");
 }
 
 int OpenGLManager::GLInfo::get_max_tex_size() const
@@ -102,19 +97,15 @@ float OpenGLManager::GLInfo::get_max_anisotropy() const
     return m_max_anisotropy;
 }
 
-static Semver parse_version_string(const std::string& version);
-
 void OpenGLManager::GLInfo::detect() const
 {
-    *const_cast<std::string*>(&m_version_string) = gl_get_string_safe(GL_VERSION, "N/A");
-    *const_cast<std::string*>(&m_glsl_version_string) = gl_get_string_safe(GL_SHADING_LANGUAGE_VERSION, "N/A");
-    *const_cast<std::string*>(&m_vendor)       = gl_get_string_safe(GL_VENDOR, "N/A");
-    *const_cast<std::string*>(&m_renderer)     = gl_get_string_safe(GL_RENDERER, "N/A");
+    *const_cast<std::string*>(&m_version) = gl_get_string_safe(GL_VERSION, "N/A");
+    *const_cast<std::string*>(&m_glsl_version) = gl_get_string_safe(GL_SHADING_LANGUAGE_VERSION, "N/A");
+    *const_cast<std::string*>(&m_vendor) = gl_get_string_safe(GL_VENDOR, "N/A");
+    *const_cast<std::string*>(&m_renderer) = gl_get_string_safe(GL_RENDERER, "N/A");
 
-    *const_cast<Semver*>(&m_version)       = parse_version_string(m_version_string);
-    *const_cast<bool*>(&m_version_is_mesa) = boost::icontains(m_version_string, "mesa");
-    *const_cast<Semver*>(&m_glsl_version)  = parse_version_string(m_glsl_version_string);
-    
+    BOOST_LOG_TRIVIAL(info) << boost::format("got opengl version %1%, glsl version %2%, vendor %3%")%m_version %m_glsl_version %m_vendor<< std::endl;
+
     int* max_tex_size = const_cast<int*>(&m_max_tex_size);
     glsafe(::glGetIntegerv(GL_MAX_TEXTURE_SIZE, max_tex_size));
 
@@ -127,37 +118,22 @@ void OpenGLManager::GLInfo::detect() const
         float* max_anisotropy = const_cast<float*>(&m_max_anisotropy);
         glsafe(::glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, max_anisotropy));
     }
-
-    if (!GLEW_ARB_compatibility)
-        *const_cast<bool*>(&m_core_profile) = true;
-
-    int* samples = const_cast<int*>(&m_samples);
-    glsafe(::glGetIntegerv(GL_SAMPLES, samples));
-
     *const_cast<bool*>(&m_detected) = true;
 }
 
-static Semver parse_version_string(const std::string& version)
+static bool version_greater_or_equal_to(const std::string& version, unsigned int major, unsigned int minor)
 {
     if (version == "N/A")
-        return Semver::invalid();
+        return false;
 
     std::vector<std::string> tokens;
     boost::split(tokens, version, boost::is_any_of(" "), boost::token_compress_on);
 
     if (tokens.empty())
-        return Semver::invalid();
-
-#if SLIC3R_OPENGL_ES
-    const std::string version_container = (tokens.size() > 1 && boost::istarts_with(tokens[1], "ES")) ? tokens[2] : tokens[0];
-#endif // SLIC3R_OPENGL_ES
+        return false;
 
     std::vector<std::string> numbers;
-#if SLIC3R_OPENGL_ES
-    boost::split(numbers, version_container, boost::is_any_of("."), boost::token_compress_on);
-#else
     boost::split(numbers, tokens[0], boost::is_any_of("."), boost::token_compress_on);
-#endif // SLIC3R_OPENGL_ES
 
     unsigned int gl_major = 0;
     unsigned int gl_minor = 0;
@@ -168,15 +144,20 @@ static Semver parse_version_string(const std::string& version)
     if (numbers.size() > 1)
         gl_minor = ::atoi(numbers[1].c_str());
 
-    return Semver(gl_major, gl_minor, 0);
+    if (gl_major < major)
+        return false;
+    else if (gl_major > major)
+        return true;
+    else
+        return gl_minor >= minor;
 }
 
 bool OpenGLManager::GLInfo::is_version_greater_or_equal_to(unsigned int major, unsigned int minor) const
 {
     if (!m_detected)
         detect();
-    
-    return m_version >= Semver(major, minor, 0);
+
+    return version_greater_or_equal_to(m_version, major, minor);
 }
 
 bool OpenGLManager::GLInfo::is_glsl_version_greater_or_equal_to(unsigned int major, unsigned int minor) const
@@ -184,7 +165,7 @@ bool OpenGLManager::GLInfo::is_glsl_version_greater_or_equal_to(unsigned int maj
     if (!m_detected)
         detect();
 
-    return m_glsl_version >= Semver(major, minor, 0);
+    return version_greater_or_equal_to(m_glsl_version, major, minor);
 }
 
 // If formatted for github, plaintext with OpenGL extensions enclosed into <details>.
@@ -204,24 +185,15 @@ std::string OpenGLManager::GLInfo::to_string(bool for_github) const
     std::string line_end = format_as_html ? "<br>" : "\n";
 
     out << h2_start << "OpenGL installation" << h2_end << line_end;
-    out << b_start << "GL version:   " << b_end << m_version << " (" << m_version_string << ")" << line_end;
-#if !SLIC3R_OPENGL_ES
-    out << b_start << "Profile:      " << b_end << (is_core_profile() ? "Core" : "Compatibility") << line_end;
-#endif // !SLIC3R_OPENGL_ES
+    out << b_start << "GL version:   " << b_end << m_version << line_end;
     out << b_start << "Vendor:       " << b_end << m_vendor << line_end;
     out << b_start << "Renderer:     " << b_end << m_renderer << line_end;
     out << b_start << "GLSL version: " << b_end << m_glsl_version << line_end;
-    out << b_start << "Textures compression:       " << b_end << (are_compressed_textures_supported() ? "Enabled" : "Disabled") << line_end;
-    out << b_start << "Mutisampling: " << b_end << (can_multisample() ? "Enabled (" + std::to_string(m_samples) + " samples)" : "Disabled") << line_end;
 
     {
-#if SLIC3R_OPENGL_ES
-        const std::string extensions_str = gl_get_string_safe(GL_EXTENSIONS, "");
         std::vector<std::string> extensions_list;
+        std::string extensions_str = gl_get_string_safe(GL_EXTENSIONS, "");
         boost::split(extensions_list, extensions_str, boost::is_any_of(" "), boost::token_compress_on);
-#else
-        std::vector<std::string>  extensions_list = get_extensions_list();
-#endif // SLIC3R_OPENGL_ES
 
         if (!extensions_list.empty()) {
             if (for_github)
@@ -242,47 +214,22 @@ std::string OpenGLManager::GLInfo::to_string(bool for_github) const
     return out.str();
 }
 
-#if !SLIC3R_OPENGL_ES
-std::vector<std::string> OpenGLManager::GLInfo::get_extensions_list() const
-{
-    std::vector<std::string> ret;
-
-    if (is_core_profile()) {
-        GLint n = 0;
-        glsafe(::glGetIntegerv(GL_NUM_EXTENSIONS, &n));
-        ret.reserve(n);
-        for (GLint i = 0; i < n; ++i) {
-            const char* extension = (const char*)::glGetStringi(GL_EXTENSIONS, i);
-            glcheck();
-            if (extension != nullptr)
-                ret.emplace_back(extension);
-        }
-    }
-    else {
-        const std::string extensions_str = gl_get_string_safe(GL_EXTENSIONS, "");
-        boost::split(ret, extensions_str, boost::is_any_of(" "), boost::token_compress_on);
-    }
-
-    return ret;
-}
-#endif // !SLIC3R_OPENGL_ES
-
 OpenGLManager::GLInfo OpenGLManager::s_gl_info;
 bool OpenGLManager::s_compressed_textures_supported = false;
 bool OpenGLManager::s_force_power_of_two_textures = false;
 OpenGLManager::EMultisampleState OpenGLManager::s_multisample = OpenGLManager::EMultisampleState::Unknown;
 OpenGLManager::EFramebufferType OpenGLManager::s_framebuffers_type = OpenGLManager::EFramebufferType::Unknown;
 
-#ifdef __APPLE__ 
+#ifdef __APPLE__
 // Part of hack to remove crash when closing the application on OSX 10.9.5 when building against newer wxWidgets
 OpenGLManager::OSInfo OpenGLManager::s_os_info;
-#endif // __APPLE__ 
+#endif // __APPLE__
 
 OpenGLManager::~OpenGLManager()
 {
     m_shaders_manager.shutdown();
 
-#ifdef __APPLE__ 
+#ifdef __APPLE__
     // This is an ugly hack needed to solve the crash happening when closing the application on OSX 10.9.5 with newer wxWidgets
     // The crash is triggered inside wxGLContext destructor
     if (s_os_info.major != 10 || s_os_info.minor != 9 || s_os_info.micro != 5)
@@ -290,127 +237,64 @@ OpenGLManager::~OpenGLManager()
 #endif //__APPLE__
         if (m_context != nullptr)
             delete m_context;
-#ifdef __APPLE__ 
+#ifdef __APPLE__
     }
 #endif //__APPLE__
 }
 
-#if !SLIC3R_OPENGL_ES
-#ifdef _WIN32
-static void APIENTRY CustomGLDebugOutput(GLenum source, GLenum type, unsigned int id, GLenum severity, GLsizei length, const char* message, const void* userParam)
-#else
-static void CustomGLDebugOutput(GLenum source, GLenum type, unsigned int id, GLenum severity, GLsizei length, const char* message, const void* userParam)
-#endif // _WIN32
-{
-    if (severity != GL_DEBUG_SEVERITY_HIGH)
-        return;
-
-    std::string out = "OpenGL DEBUG message [";
-    switch (type)
-    {
-    case GL_DEBUG_TYPE_ERROR:               out += "Error"; break;
-    case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR: out += "Deprecated Behaviour"; break;
-    case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:  out += "Undefined Behaviour"; break;
-    case GL_DEBUG_TYPE_PORTABILITY:         out += "Portability"; break;
-    case GL_DEBUG_TYPE_PERFORMANCE:         out += "Performance"; break;
-    case GL_DEBUG_TYPE_MARKER:              out += "Marker"; break;
-    case GL_DEBUG_TYPE_PUSH_GROUP:          out += "Push Group"; break;
-    case GL_DEBUG_TYPE_POP_GROUP:           out += "Pop Group"; break;
-    case GL_DEBUG_TYPE_OTHER:               out += "Other"; break;
-    }
-    out += "/";
-    switch (source)
-    {
-    case GL_DEBUG_SOURCE_API:             out += "API"; break;
-    case GL_DEBUG_SOURCE_WINDOW_SYSTEM:   out += "Window System"; break;
-    case GL_DEBUG_SOURCE_SHADER_COMPILER: out += "Shader Compiler"; break;
-    case GL_DEBUG_SOURCE_THIRD_PARTY:     out += "Third Party"; break;
-    case GL_DEBUG_SOURCE_APPLICATION:     out += "Application"; break;
-    case GL_DEBUG_SOURCE_OTHER:           out += "Other"; break;
-    }
-    out += "/";
-    switch (severity)
-    {
-    case GL_DEBUG_SEVERITY_HIGH:         out += "high"; break;
-    case GL_DEBUG_SEVERITY_MEDIUM:       out += "medium"; break;
-    case GL_DEBUG_SEVERITY_LOW:          out += "low"; break;
-    case GL_DEBUG_SEVERITY_NOTIFICATION: out += "notification"; break;
-    }
-    out += "]:\n";
-    std::cout << out << "(" << id << "): " << message << "\n\n";
-}
-#endif // !SLIC3R_OPENGL_ES
-
-bool OpenGLManager::init_gl()
+bool OpenGLManager::init_gl(bool popup_error)
 {
     if (!m_gl_initialized) {
-      glewExperimental = true;
-      GLenum err = glewInit();
-        if (err != GLEW_OK) {
-            BOOST_LOG_TRIVIAL(error) << "Unable to init glew library: " << glewGetErrorString(err);
+        GLenum result = glewInit();
+        if (result != GLEW_OK) {
+            BOOST_LOG_TRIVIAL(error) << "Unable to init glew library";
             return false;
         }
-
-        do {
-            // glewInit() generates an OpenGL GL_INVALID_ENUM error
-            err = ::glGetError();
-        } while (err != GL_NO_ERROR);
-
+	//BOOST_LOG_TRIVIAL(info) << "glewInit Success."<< std::endl;
         m_gl_initialized = true;
-
         if (GLEW_EXT_texture_compression_s3tc)
             s_compressed_textures_supported = true;
         else
             s_compressed_textures_supported = false;
 
-        if (GLEW_ARB_framebuffer_object)
+        if (GLEW_ARB_framebuffer_object) {
             s_framebuffers_type = EFramebufferType::Arb;
-        else if (GLEW_EXT_framebuffer_object)
+            BOOST_LOG_TRIVIAL(info) << "Found Framebuffer Type ARB."<< std::endl;
+        }
+        else if (GLEW_EXT_framebuffer_object) {
+            BOOST_LOG_TRIVIAL(info) << "Found Framebuffer Type Ext."<< std::endl;
             s_framebuffers_type = EFramebufferType::Ext;
-        else
+        }
+        else {
             s_framebuffers_type = EFramebufferType::Unknown;
-
-#if SLIC3R_OPENGL_ES
-        bool valid_version = s_gl_info.is_version_greater_or_equal_to(3, 0);
-#else
-        const bool valid_version = s_gl_info.is_version_greater_or_equal_to(3, 2);
-#endif // SLIC3R_OPENGL_ES
-
-        if (!valid_version) {
-            // Complain about the OpenGL version.
-            wxString message = format_wxstr(
-#if SLIC3R_OPENGL_ES
-                _L("PrusaSlicer requires OpenGL ES 3.0 capable graphics driver to run correctly, \n"
-                   "while OpenGL version %s, renderer %s, vendor %s was detected."), s_gl_info.get_version_string(), s_gl_info.get_renderer(), s_gl_info.get_vendor());
-#else
-                _L("PrusaSlicer requires OpenGL 3.2 capable graphics driver to run correctly,\n"
-                   "while OpenGL version %s, renderer %s, vendor %s was detected."), s_gl_info.get_version_string(), s_gl_info.get_renderer(), s_gl_info.get_vendor());
-#endif // SLIC3R_OPENGL_ES
-            message += "\n";
-          	message += _L("You may need to update your graphics card driver.");
-#ifdef _WIN32
-            message += "\n";
-            message += _L("As a workaround, you may run PrusaSlicer with a software rendered 3D graphics by running prusa-slicer.exe with the --sw-renderer parameter.");
-#endif
-        	wxMessageBox(message, wxString("PrusaSlicer - ") + _L("Unsupported OpenGL version"), wxOK | wxICON_ERROR);
+            BOOST_LOG_TRIVIAL(warning) << "Found Framebuffer Type unknown!"<< std::endl;
         }
 
-        if (valid_version) {
+        bool valid_version = s_gl_info.is_version_greater_or_equal_to(2, 0);
+        if (!valid_version) {
+            BOOST_LOG_TRIVIAL(error) << "Found opengl version <= 2.0"<< std::endl;
+            // Complain about the OpenGL version.
+            if (popup_error) {
+                wxString message = from_u8((boost::format(
+                    _utf8(L("The application cannot run normally because OpenGL version is lower than 2.0.\n")))).str());
+                message += "\n";
+                message += _L("Please upgrade your graphics card driver.");
+                wxMessageBox(message, _L("Unsupported OpenGL version"), wxOK | wxICON_ERROR);
+            }
+        }
+
+        if (valid_version)
+        {
             // load shaders
             auto [result, error] = m_shaders_manager.init();
             if (!result) {
-                wxString message = format_wxstr(_L("Unable to load the following shaders:\n%s"), error);
-                wxMessageBox(message, wxString("PrusaSlicer - ") + _L("Error loading shaders"), wxOK | wxICON_ERROR);
+                BOOST_LOG_TRIVIAL(error) << "Unable to load shaders: "<<error<< std::endl;
+                if (popup_error) {
+                    wxString message = from_u8((boost::format(
+                        _utf8(L("Unable to load shaders:\n%s"))) % error).str());
+                    wxMessageBox(message, _L("Error loading shaders"), wxOK | wxICON_ERROR);
+                }
             }
-#if !SLIC3R_OPENGL_ES
-            if (m_debug_enabled && s_gl_info.is_version_greater_or_equal_to(4, 3) && GLEW_KHR_debug) {
-                ::glEnable(GL_DEBUG_OUTPUT);
-                ::glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
-                ::glDebugMessageCallback(CustomGLDebugOutput, nullptr);
-                ::glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
-                std::cout << "Enabled OpenGL debug output\n";
-            }
-#endif // !SLIC3R_OPENGL_ES
         }
 
 #ifdef _WIN32
@@ -436,91 +320,12 @@ bool OpenGLManager::init_gl()
     return true;
 }
 
-#if SLIC3R_OPENGL_ES
 wxGLContext* OpenGLManager::init_glcontext(wxGLCanvas& canvas)
-#else
-wxGLContext* OpenGLManager::init_glcontext(wxGLCanvas& canvas, const std::pair<int, int>& required_opengl_version, bool enable_compatibility_profile,
-    bool enable_debug)
-#endif // SLIC3R_OPENGL_ES
 {
     if (m_context == nullptr) {
-#if SLIC3R_OPENGL_ES
-        wxGLContextAttrs attrs;
-        attrs.PlatformDefaults().ES2().MajorVersion(2).EndList();
-        m_context = new wxGLContext(&canvas, nullptr, &attrs);
-#else
-        m_debug_enabled = enable_debug;
+        m_context = new wxGLContext(&canvas);
 
-        const int gl_major = required_opengl_version.first;
-        const int gl_minor = required_opengl_version.second;
-        const bool supports_core_profile =
-            std::find(OpenGLVersions::core.begin(), OpenGLVersions::core.end(), std::make_pair(gl_major, gl_minor)) != OpenGLVersions::core.end();
-
-        if (gl_major == 0 && !enable_compatibility_profile) {
-            // search for highest supported core profile version
-            // disable wxWidgets logging to avoid showing the log dialog in case the following code fails generating a valid gl context
-            wxLogNull logNo;
-            for (auto v = OpenGLVersions::core.rbegin(); v != OpenGLVersions::core.rend(); ++v) {
-                wxGLContextAttrs attrs;
-                attrs.PlatformDefaults().MajorVersion(v->first).MinorVersion(v->second).CoreProfile().ForwardCompatible();
-                if (m_debug_enabled)
-                    attrs.DebugCtx();
-                attrs.EndList();
-                m_context = new wxGLContext(&canvas, nullptr, &attrs);
-                if (m_context->IsOK())
-                    break;
-                else {
-                    delete m_context;
-                    m_context = nullptr;
-                }
-            }
-        }
-
-        if (m_context == nullptr) {
-            // search for requested compatibility profile version 
-            if (enable_compatibility_profile) {
-                // disable wxWidgets logging to avoid showing the log dialog in case the following code fails generating a valid gl context
-                wxLogNull logNo;
-                wxGLContextAttrs attrs;
-                attrs.PlatformDefaults().CompatibilityProfile();
-                if (m_debug_enabled)
-                    attrs.DebugCtx();
-                attrs.EndList();
-                m_context = new wxGLContext(&canvas, nullptr, &attrs);
-                if (!m_context->IsOK()) {
-                    delete m_context;
-                    m_context = nullptr;
-                }
-            }
-            // search for requested core profile version 
-            else if (supports_core_profile) {
-                // disable wxWidgets logging to avoid showing the log dialog in case the following code fails generating a valid gl context
-                wxLogNull logNo;
-                wxGLContextAttrs attrs;
-                attrs.PlatformDefaults().MajorVersion(gl_major).MinorVersion(gl_minor).CoreProfile().ForwardCompatible();
-                if (m_debug_enabled)
-                    attrs.DebugCtx();
-                attrs.EndList();
-                m_context = new wxGLContext(&canvas, nullptr, &attrs);
-                if (!m_context->IsOK()) {
-                    delete m_context;
-                    m_context = nullptr;
-                }
-            }
-        }
-
-        if (m_context == nullptr) {
-            wxGLContextAttrs attrs;
-            attrs.PlatformDefaults();
-            if (m_debug_enabled)
-                attrs.DebugCtx();
-            attrs.EndList();
-            // if no valid context was created use the default one
-            m_context = new wxGLContext(&canvas, nullptr, &attrs);
-        }
-#endif // SLIC3R_OPENGL_ES
-
-#ifdef __APPLE__ 
+#ifdef __APPLE__
         // Part of hack to remove crash when closing the application on OSX 10.9.5 when building against newer wxWidgets
         s_os_info.major = wxPlatformInfo::Get().GetOSMajorVersion();
         s_os_info.minor = wxPlatformInfo::Get().GetOSMinorVersion();
@@ -530,39 +335,51 @@ wxGLContext* OpenGLManager::init_glcontext(wxGLCanvas& canvas, const std::pair<i
     return m_context;
 }
 
-wxGLCanvas* OpenGLManager::create_wxglcanvas(wxWindow& parent, bool enable_auto_aa_samples)
+wxGLCanvas* OpenGLManager::create_wxglcanvas(wxWindow& parent)
 {
-    wxGLAttributes attribList;
-    s_multisample = EMultisampleState::Disabled;
-    // Disable multi-sampling on ChromeOS, as the OpenGL virtualization swaps Red/Blue channels with multi-sampling enabled,
-    // at least on some platforms.
-    if (platform_flavor() != PlatformFlavor::LinuxOnChromium) {
-        for (int i = enable_auto_aa_samples ? 16 : 4; i >= 4; i /= 2) {
-            attribList.Reset();
-            attribList.PlatformDefaults().RGBA().DoubleBuffer().MinRGBA(8, 8, 8, 8).Depth(24).SampleBuffers(1).Samplers(i);
-#ifdef __APPLE__
-            // on MAC the method RGBA() has no effect
-            attribList.SetNeedsARB(true);
-#endif // __APPLE__
-            attribList.EndList();
-            if (wxGLCanvas::IsDisplaySupported(attribList)) {
-                s_multisample = EMultisampleState::Enabled;
-                break;
-            }
-        }
+    int attribList[] = {
+        WX_GL_RGBA,
+        WX_GL_DOUBLEBUFFER,
+        // RGB channels each should be allocated with 8 bit depth. One should almost certainly get these bit depths by default.
+        WX_GL_MIN_RED, 			8,
+        WX_GL_MIN_GREEN, 		8,
+        WX_GL_MIN_BLUE, 		8,
+        // Requesting an 8 bit alpha channel. Interestingly, the NVIDIA drivers would most likely work with some alpha plane, but glReadPixels would not return
+        // the alpha channel on NVIDIA if not requested when the GL context is created.
+        WX_GL_MIN_ALPHA, 		8,
+        WX_GL_DEPTH_SIZE, 		24,
+        //BBS: turn on stencil buffer for outline
+        WX_GL_STENCIL_SIZE,     8,
+        WX_GL_SAMPLE_BUFFERS, 	GL_TRUE,
+        WX_GL_SAMPLES, 			4,
+        0
+    };
+
+    if (s_multisample == EMultisampleState::Unknown) {
+        detect_multisample(attribList);
+//        // debug output
+//        std::cout << "Multisample " << (can_multisample() ? "enabled" : "disabled") << std::endl;
     }
 
-    if (s_multisample != EMultisampleState::Enabled) {
-        attribList.Reset();
-        attribList.PlatformDefaults().RGBA().DoubleBuffer().MinRGBA(8, 8, 8, 8).Depth(24);
-#ifdef __APPLE__
-        // on MAC the method RGBA() has no effect
-        attribList.SetNeedsARB(true);
-#endif // __APPLE__
-        attribList.EndList();
-    }
+    if (! can_multisample())
+        attribList[12] = 0;
 
-    return new wxGLCanvas(&parent, attribList, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxWANTS_CHARS);
+    return new wxGLCanvas(&parent, wxID_ANY, attribList, wxDefaultPosition, wxDefaultSize, wxWANTS_CHARS);
+}
+
+void OpenGLManager::detect_multisample(int* attribList)
+{
+    int wxVersion = wxMAJOR_VERSION * 10000 + wxMINOR_VERSION * 100 + wxRELEASE_NUMBER;
+    bool enable_multisample = wxVersion >= 30003;
+    s_multisample =
+        enable_multisample &&
+        // Disable multi-sampling on ChromeOS, as the OpenGL virtualization swaps Red/Blue channels with multi-sampling enabled,
+        // at least on some platforms.
+        platform_flavor() != PlatformFlavor::LinuxOnChromium &&
+        wxGLCanvas::IsDisplaySupported(attribList)
+        ? EMultisampleState::Enabled : EMultisampleState::Disabled;
+    // Alternative method: it was working on previous version of wxWidgets but not with the latest, at least on Windows
+    // s_multisample = enable_multisample && wxGLCanvas::IsExtensionSupported("WGL_ARB_multisample");
 }
 
 } // namespace GUI

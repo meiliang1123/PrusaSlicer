@@ -8,6 +8,7 @@
 #include <memory>
 #include <map>
 
+#include "slic3r/GUI/3DScene.hpp"
 #include "slic3r/GUI/MeshUtils.hpp"
 
 namespace Slic3r {
@@ -48,6 +49,7 @@ enum class SLAGizmoEventType : unsigned char {
 
 
 class CommonGizmosDataBase;
+class AssembleViewDataBase;
 namespace CommonGizmosDataObjects {
     class SelectionInfo;
     class InstancesHider;
@@ -55,6 +57,11 @@ namespace CommonGizmosDataObjects {
     class Raycaster;
     class ObjectClipper;
     class SupportsClipper;
+}
+
+namespace AssembleViewDataObjects {
+    class ModelObjectsInfo;
+    class ModelObjectsClipper;
 }
 
 // Some of the gizmos use the same data that need to be updated ocassionally.
@@ -71,7 +78,6 @@ enum class CommonGizmosDataID {
     InstancesHider       = 1 << 1,
     Raycaster            = 1 << 3,
     ObjectClipper        = 1 << 4,
-    SupportsClipper      = 1 << 5,
 
 };
 
@@ -93,7 +99,7 @@ public:
 //    CommonGizmosDataObjects::HollowedMesh* hollowed_mesh() const;
     CommonGizmosDataObjects::Raycaster* raycaster() const;
     CommonGizmosDataObjects::ObjectClipper* object_clipper() const;
-    CommonGizmosDataObjects::SupportsClipper* supports_clipper() const;
+    // CommonGizmosDataObjects::SupportsClipper* supports_clipper() const;
 
 
     GLCanvas3D* get_canvas() const { return m_canvas; }
@@ -160,15 +166,9 @@ public:
     explicit SelectionInfo(CommonGizmosDataPool* cgdp)
         : CommonGizmosDataBase(cgdp) {}
 
-    // Returns a non-null pointer if the selection is a single full instance
     ModelObject* model_object() const { return m_model_object; }
-    const SLAPrintObject *print_object() const { return m_print_object; }
-    // Returns a non-null pointer if the selection is a single volume
-    ModelVolume* model_volume() const { return m_model_volume; }
-    ModelInstance *model_instance() const;
     int get_active_instance() const;
-    float get_sla_shift() const { return m_use_shift ? m_z_shift : 0.f; }
-    void set_use_shift(bool use) { m_use_shift = use; }
+    float get_sla_shift() const { return m_z_shift; }
 
 protected:
     void on_update() override;
@@ -176,11 +176,8 @@ protected:
 
 private:
     ModelObject* m_model_object = nullptr;
-    const SLAPrintObject *m_print_object = nullptr;
-    ModelVolume* m_model_volume = nullptr;
     // int m_active_inst = -1;
     float m_z_shift = 0.f;
-    bool m_use_shift = false;
 };
 
 
@@ -194,7 +191,6 @@ public:
     CommonGizmosDataID get_dependencies() const override { return CommonGizmosDataID::SelectionInfo; }
 #endif // NDEBUG
 
-    void set_hide_full_scene(bool hide);
     void render_cut() const;
 
 protected:
@@ -202,7 +198,6 @@ protected:
     void on_release() override;
 
 private:
-    bool m_hide_full_scene{ false };
     std::vector<const TriangleMesh*> m_old_meshes;
     std::vector<std::unique_ptr<MeshClipper>> m_clippers;
 };
@@ -228,8 +223,6 @@ protected:
 private:
     std::vector<std::unique_ptr<MeshRaycaster>> m_raycasters;
     std::vector<const TriangleMesh*> m_old_meshes;
-    // Used to store the sla mesh coming from the backend
-    TriangleMesh m_sla_mesh_cache;
 };
 
 
@@ -242,8 +235,6 @@ public:
 #ifndef NDEBUG
     CommonGizmosDataID get_dependencies() const override { return CommonGizmosDataID::SelectionInfo; }
 #endif // NDEBUG
-
-    void set_normal(const Vec3d& dir);
     double get_position() const { return m_clp_ratio; }
     const ClippingPlane* get_clipping_plane(bool ignore_hide_clipped = false) const;
     void render_cut(const std::vector<size_t>* ignore_idxs = nullptr) const;
@@ -264,8 +255,6 @@ protected:
 
 private:
     std::vector<const TriangleMesh*> m_old_meshes;
-    // Used to store the sla mesh coming from the backend
-    TriangleMesh m_sla_mesh_cache;
     std::vector<std::pair<std::unique_ptr<MeshClipper>, Geometry::Transformation>> m_clippers;
     std::unique_ptr<ClippingPlane> m_clp;
     double m_clp_ratio = 0.;
@@ -273,22 +262,108 @@ private:
     bool m_hide_clipped = true;
 };
 
+} // namespace CommonGizmosDataObjects
 
 
-class SupportsClipper : public CommonGizmosDataBase
-{
+enum class AssembleViewDataID {
+    None = 0,
+    ModelObjectsInfo = 1 << 0,
+    ModelObjectsClipper = 1 << 4,
+};
+
+class AssembleViewDataPool {
 public:
-    explicit SupportsClipper(CommonGizmosDataPool* cgdp)
-        : CommonGizmosDataBase(cgdp) {}
+    AssembleViewDataPool(GLCanvas3D* canvas);
+
+    // Update all resources and release what is not used.
+    // Accepts a bitmask of currently required resources.
+    void update(AssembleViewDataID required);
+
+    // Getters for the data that need to be accessed from the gizmos directly.
+    AssembleViewDataObjects::ModelObjectsInfo* model_objects_info() const;
+    AssembleViewDataObjects::ModelObjectsClipper* model_objects_clipper() const;
+
+    GLCanvas3D* get_canvas() const { return m_canvas; }
+
+private:
+    std::map<AssembleViewDataID, std::unique_ptr<AssembleViewDataBase>> m_data;
+    GLCanvas3D* m_canvas;
+
 #ifndef NDEBUG
-    CommonGizmosDataID get_dependencies() const override {
-        return CommonGizmosDataID(
-                    int(CommonGizmosDataID::SelectionInfo)
-                  | int(CommonGizmosDataID::ObjectClipper)
-               );
-    }
+    bool check_dependencies(AssembleViewDataID required) const;
+#endif
+};
+
+// Base class for a wrapper object managing a single resource.
+// Each of the enum values above (safe None) will have an object of this kind.
+class AssembleViewDataBase {
+public:
+    // Pass a backpointer to the pool, so the individual
+    // objects can communicate with one another.
+    explicit AssembleViewDataBase(AssembleViewDataPool* cgdp)
+        : m_common{ cgdp } {}
+    virtual ~AssembleViewDataBase() {}
+
+    // Update the resource.
+    void update() { on_update(); m_is_valid = true; }
+
+    // Release any data that are stored internally.
+    void release() { on_release(); m_is_valid = false; }
+
+    // Returns whether the resource is currently maintained.
+    bool is_valid() const { return m_is_valid; }
+
+#ifndef NDEBUG
+    // Return a bitmask of all resources that this one relies on.
+    // The dependent resource must have higher ID than the one
+    // it depends on.
+    virtual AssembleViewDataID get_dependencies() const { return AssembleViewDataID::None; }
 #endif // NDEBUG
 
+protected:
+    virtual void on_release() = 0;
+    virtual void on_update() = 0;
+    AssembleViewDataPool* get_pool() const { return m_common; }
+
+
+private:
+    bool m_is_valid = false;
+    AssembleViewDataPool* m_common = nullptr;
+};
+
+namespace AssembleViewDataObjects
+{
+class ModelObjectsInfo : public AssembleViewDataBase
+{
+public:
+    explicit ModelObjectsInfo(AssembleViewDataPool* cgdp)
+        : AssembleViewDataBase(cgdp) {}
+
+    ModelObjectPtrs model_objects() const { return m_model_objects; }
+    //int get_active_instance() const;
+    float get_sla_shift() const { return m_z_shift; }
+
+protected:
+    void on_update() override;
+    void on_release() override;
+
+private:
+    ModelObjectPtrs m_model_objects;
+    float m_z_shift = 0.f;
+};
+
+class ModelObjectsClipper : public AssembleViewDataBase
+{
+public:
+    explicit ModelObjectsClipper(AssembleViewDataPool* cgdp)
+        : AssembleViewDataBase(cgdp) {}
+#ifndef NDEBUG
+    AssembleViewDataID get_dependencies() const override { return AssembleViewDataID::ModelObjectsInfo; }
+#endif // NDEBUG
+
+    void set_position(double pos, bool keep_normal);
+    double get_position() const { return m_clp_ratio; }
+    ClippingPlane* get_clipping_plane() const { return m_clp.get(); }
     void render_cut() const;
 
 
@@ -297,18 +372,13 @@ protected:
     void on_release() override;
 
 private:
-    int m_print_object_idx = -1;
-//    int m_print_objects_count = 0;
-    std::unique_ptr<MeshClipper> m_supports_clipper;
-    std::unique_ptr<MeshClipper> m_pad_clipper;
+    std::vector<const TriangleMesh*> m_old_meshes;
+    std::vector<std::unique_ptr<MeshClipper>> m_clippers;
+    std::unique_ptr<ClippingPlane> m_clp;
+    double m_clp_ratio = 0.;
+    double m_active_inst_bb_radius = 0.;
 };
-
-} // namespace CommonGizmosDataObjects
-
-
-
-
-
+}
 
 } // namespace GUI
 } // namespace Slic3r

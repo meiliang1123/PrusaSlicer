@@ -13,7 +13,6 @@
 #include <type_traits>
 #include <vector>
 
-#include "Point.hpp"
 #include "libslic3r.h"
 #include "Utils.hpp"
 
@@ -34,11 +33,10 @@ struct SlicingParameters
 	SlicingParameters() = default;
 
     static SlicingParameters create_from_config(
-        const PrintConfig               &print_config,
-        const PrintObjectConfig         &object_config,
-        coordf_t                         object_height,
-        const std::vector<unsigned int> &object_extruders,
-        const Vec3d                     &object_shrinkage_compensation);
+        const PrintConfig       &print_config, 
+        const PrintObjectConfig &object_config,
+        coordf_t                 object_height,
+        const std::vector<unsigned int> &object_extruders);
 
     // Has any raft layers?
     bool        has_raft() const { return raft_layers() > 0; }
@@ -48,12 +46,7 @@ struct SlicingParameters
     bool        first_object_layer_height_fixed()  const { return ! has_raft() || first_object_layer_bridging; }
 
     // Height of the object to be printed. This value does not contain the raft height.
-    // This value is scaled by shrinkage compensation in the Z-axis.
     coordf_t    object_print_z_height() const { return object_print_z_max - object_print_z_min; }
-
-    // Height of the object to be printed. This value does not contain the raft height.
-    // This value isn't scaled by shrinkage compensation in the Z-axis.
-    coordf_t    object_print_z_uncompensated_height() const { return object_print_z_uncompensated_max - object_print_z_min; }
 
     bool        valid { false };
 
@@ -106,13 +99,7 @@ struct SlicingParameters
     coordf_t    raft_contact_top_z { 0 };
     // In case of a soluble interface, object_print_z_min == raft_contact_top_z, otherwise there is a gap between the raft and the 1st object layer.
     coordf_t 	object_print_z_min { 0 };
-    // This value of maximum print Z is scaled by shrinkage compensation in the Z-axis.
     coordf_t 	object_print_z_max { 0 };
-
-    // This value of maximum print Z isn't scaled by shrinkage compensation.
-    coordf_t 	object_print_z_uncompensated_max { 0 };
-    // Scaling factor for compensating shrinkage in Z-axis.
-    coordf_t    object_shrinkage_compensation_z { 0 };
 };
 static_assert(IsTriviallyCopyable<SlicingParameters>::value, "SlicingParameters class is not POD (and it should be - see constructor).");
 
@@ -133,10 +120,14 @@ inline bool equal_layering(const SlicingParameters &sp1, const SlicingParameters
             sp1.first_print_layer_height            == sp2.first_print_layer_height             &&
             sp1.first_object_layer_height           == sp2.first_object_layer_height            &&
             sp1.first_object_layer_bridging         == sp2.first_object_layer_bridging          &&
+            // BBS: following  are not required for equal layer height.
+            // Since the z-gap diff may be multiple of layer height.
+#if 0
             sp1.soluble_interface                   == sp2.soluble_interface                    &&
             sp1.gap_raft_object                     == sp2.gap_raft_object                      &&
             sp1.gap_object_support                  == sp2.gap_object_support                   &&
             sp1.gap_support_object                  == sp2.gap_support_object                   &&
+#endif
             sp1.raft_base_top_z                     == sp2.raft_base_top_z                      &&
             sp1.raft_interface_top_z                == sp2.raft_interface_top_z                 &&
             sp1.raft_contact_top_z                  == sp2.raft_contact_top_z                   &&
@@ -186,7 +177,8 @@ void adjust_layer_height_profile(
 // The object layers are based at z=0, ignoring the raft layers.
 std::vector<coordf_t> generate_object_layers(
     const SlicingParameters     &slicing_params,
-    const std::vector<coordf_t> &layer_height_profile);
+    const std::vector<coordf_t> &layer_height_profile,
+    bool is_precise_z_height);
 
 // Check whether the layer height profile describes a fixed layer height profile.
 bool check_object_layers_fixed(

@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2023 Oleksandra Iushchenko @YuSanka, Lukáš Matěna @lukasmatena, David Kocík @kocikdav, Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas, Enrico Turri @enricoturri1966, Vojtěch Král @vojtechkral
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "PrintHostDialogs.hpp"
 
 #include <algorithm>
@@ -25,7 +21,6 @@
 
 #include "GUI.hpp"
 #include "GUI_App.hpp"
-#include "Plater.hpp"
 #include "MsgDialog.hpp"
 #include "I18N.hpp"
 #include "MainFrame.hpp"
@@ -106,9 +101,10 @@ PrintHostSendDialog::PrintHostSendDialog(const fs::path &path, PrintHostPostUplo
         m_valid_suffix = recent_path.substr(extension_start);
     // .gcode suffix control
     auto validate_path = [this](const wxString &path) -> bool {
-        if (!path.Lower().EndsWith(m_valid_suffix.Lower())) {
+        if (! path.Lower().EndsWith(m_valid_suffix.Lower())) {
             MessageDialog msg_wingow(this, wxString::Format(_L("Upload filename doesn't end with \"%s\". Do you wish to continue?"), m_valid_suffix), wxString(SLIC3R_APP_NAME), wxYES | wxNO);
-            return msg_wingow.ShowModal() == wxID_YES;
+            if (msg_wingow.ShowModal() == wxID_NO)
+                return false;
         }
         return true;
     };
@@ -122,15 +118,15 @@ PrintHostSendDialog::PrintHostSendDialog(const fs::path &path, PrintHostPostUplo
     });
     txt_filename->SetFocus();
     
-    if (post_actions.has(PrintHostPostUploadAction::QueuePrint)) {
-        auto* btn_print = add_button(wxID_ADD, false, _L("Upload to Queue"));
-        btn_print->Bind(wxEVT_BUTTON, [this, validate_path](wxCommandEvent&) {
-            if (validate_path(txt_filename->GetValue())) {
-                post_upload_action = PrintHostPostUploadAction::QueuePrint;
-                EndDialog(wxID_OK);
-            }
-            });
-    }
+    // if (post_actions.has(PrintHostPostUploadAction::QueuePrint)) {
+    //     auto* btn_print = add_button(wxID_ADD, false, _L("Upload to Queue"));
+    //     btn_print->Bind(wxEVT_BUTTON, [this, validate_path](wxCommandEvent&) {
+    //         if (validate_path(txt_filename->GetValue())) {
+    //             post_upload_action = PrintHostPostUploadAction::QueuePrint;
+    //             EndDialog(wxID_OK);
+    //         }
+    //         });
+    // }
 
     if (post_actions.has(PrintHostPostUploadAction::StartPrint)) {
         auto* btn_print = add_button(wxID_YES, false, _L("Upload and Print"));
@@ -142,18 +138,18 @@ PrintHostSendDialog::PrintHostSendDialog(const fs::path &path, PrintHostPostUplo
         });
     }
 
-    if (post_actions.has(PrintHostPostUploadAction::StartSimulation)) {
-        // Using wxID_MORE as a button identifier to be different from the other buttons, wxID_MORE has no other meaning here.
-        auto* btn_simulate = add_button(wxID_MORE, false, _L("Upload and Simulate"));
-        btn_simulate->Bind(wxEVT_BUTTON, [this, validate_path](wxCommandEvent&) {
-            if (validate_path(txt_filename->GetValue())) {
-                post_upload_action = PrintHostPostUploadAction::StartSimulation;
-                EndDialog(wxID_OK);
-            }        
-        });
-    }
+    // if (post_actions.has(PrintHostPostUploadAction::StartSimulation)) {
+    //     // Using wxID_MORE as a button identifier to be different from the other buttons, wxID_MORE has no other meaning here.
+    //     auto* btn_simulate = add_button(wxID_MORE, false, _L("Upload and Simulate"));
+    //     btn_simulate->Bind(wxEVT_BUTTON, [this, validate_path](wxCommandEvent&) {
+    //         if (validate_path(txt_filename->GetValue())) {
+    //             post_upload_action = PrintHostPostUploadAction::StartSimulation;
+    //             EndDialog(wxID_OK);
+    //         }        
+    //     });
+    // }
 
-    add_button(wxID_CANCEL);
+    add_button(wxID_CANCEL,false, L("Cancel"));
     finalize();
 
 #ifdef __linux__
@@ -203,7 +199,7 @@ std::string PrintHostSendDialog::storage() const
         return GUI::format("%1%", m_preselected_storage);
     if (combo_storage->GetSelection() < 0 || combo_storage->GetSelection() >= int(m_paths.size()))
         return {};
-    return into_u8(m_paths[combo_storage->GetSelection()]);
+    return boost::nowide::narrow(m_paths[combo_storage->GetSelection()]);
 }
 
 void PrintHostSendDialog::EndModal(int ret)
@@ -467,9 +463,7 @@ void PrintHostQueueDialog::on_progress(Event &evt)
         wxVariant nm, hst;
         job_list->GetValue(nm, evt.job_id, COL_FILENAME);
         job_list->GetValue(hst, evt.job_id, COL_HOST);
-        const wchar_t * nm_str = nm.GetString();
-        const wchar_t * hst_str = hst.GetString();
-        wxGetApp().notification_manager()->set_upload_job_notification_percentage(evt.job_id + 1, into_u8(nm_str), into_u8(hst_str), evt.progress / 100.f);
+        wxGetApp().notification_manager()->set_upload_job_notification_percentage(evt.job_id + 1, boost::nowide::narrow(nm.GetString()), boost::nowide::narrow(hst.GetString()), evt.progress / 100.f);
     }
 }
 
@@ -490,7 +484,7 @@ void PrintHostQueueDialog::on_error(Event &evt)
     wxVariant nm, hst;
     job_list->GetValue(nm, evt.job_id, COL_FILENAME);
     job_list->GetValue(hst, evt.job_id, COL_HOST);
-    wxGetApp().notification_manager()->upload_job_notification_show_error(evt.job_id + 1, into_u8(nm.GetString()), into_u8(hst.GetString()));
+    wxGetApp().notification_manager()->upload_job_notification_show_error(evt.job_id + 1, boost::nowide::narrow(nm.GetString()), boost::nowide::narrow(hst.GetString()));
 }
 
 void PrintHostQueueDialog::on_cancel(Event &evt)
@@ -505,30 +499,32 @@ void PrintHostQueueDialog::on_cancel(Event &evt)
     wxVariant nm, hst;
     job_list->GetValue(nm, evt.job_id, COL_FILENAME);
     job_list->GetValue(hst, evt.job_id, COL_HOST);
-    wxGetApp().notification_manager()->upload_job_notification_show_canceled(evt.job_id + 1, into_u8(nm.GetString()), into_u8(hst.GetString()));
+    wxGetApp().notification_manager()->upload_job_notification_show_canceled(evt.job_id + 1, boost::nowide::narrow(nm.GetString()), boost::nowide::narrow(hst.GetString()));
 }
 
 void PrintHostQueueDialog::on_info(Event& evt)
 {
+    /*
     wxCHECK_RET(evt.job_id < (size_t)job_list->GetItemCount(), "Out of bounds access to job list");
     
     if (evt.tag == L"resolve") {
         wxVariant hst(evt.status);
         job_list->SetValue(hst, evt.job_id, COL_HOST);
-        wxGetApp().notification_manager()->set_upload_job_notification_host(evt.job_id + 1, into_u8(evt.status));
+        wxGetApp().notification_manager()->set_upload_job_notification_host(evt.job_id + 1, boost::nowide::narrow(evt.status));
     } else if (evt.tag == L"complete") {
         wxVariant hst(evt.status);
         job_list->SetValue(hst, evt.job_id, COL_ERRORMSG);
         wxGetApp().notification_manager()->set_upload_job_notification_completed(evt.job_id + 1);
-        wxGetApp().notification_manager()->set_upload_job_notification_status(evt.job_id + 1, into_u8(evt.status));
+        wxGetApp().notification_manager()->set_upload_job_notification_status(evt.job_id + 1, boost::nowide::narrow(evt.status));
     } else if(evt.tag == L"complete_with_warning"){
         wxVariant hst(evt.status);
         job_list->SetValue(hst, evt.job_id, COL_ERRORMSG);
         wxGetApp().notification_manager()->set_upload_job_notification_completed_with_warning(evt.job_id + 1);
-        wxGetApp().notification_manager()->set_upload_job_notification_status(evt.job_id + 1, into_u8(evt.status));
+        wxGetApp().notification_manager()->set_upload_job_notification_status(evt.job_id + 1, boost::nowide::narrow(evt.status));
     } else if (evt.tag == L"set_complete_off") {
         wxGetApp().notification_manager()->set_upload_job_notification_comp_on_100(evt.job_id + 1, false);
     }
+    */
 }
 
 void PrintHostQueueDialog::get_active_jobs(std::vector<std::pair<std::string, std::string>>& ret)

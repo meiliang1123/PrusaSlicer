@@ -1,20 +1,9 @@
-///|/ Copyright (c) Prusa Research 2018 - 2023 David Kocík @kocikdav, Oleksandra Iushchenko @YuSanka, Vojtěch Král @vojtechkral, Vojtěch Bubník @bubnikv
-///|/
-///|/ ported from lib/Slic3r/GUI/ConfigWizard.pm:
-///|/ Copyright (c) Prusa Research 2016 - 2018 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2012 - 2016 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2012 Henrik Brix Andersen @henrikbrixandersen
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_ConfigWizard_hpp_
 #define slic3r_ConfigWizard_hpp_
 
 #include <memory>
 
 #include <wx/dialog.h>
-#include <wx/sizer.h>
-#include <wx/textctrl.h>
 
 #include "GUI_Utils.hpp"
 
@@ -25,39 +14,6 @@ class PresetUpdater;
 
 namespace GUI {
 
-class ConfigWizardLoadingDialog : public wxDialog
-{
-public:
-    ConfigWizardLoadingDialog(wxWindow* parent, const wxString& message);
-};
-
-namespace DownloaderUtils {
-    class Worker : public wxBoxSizer
-    {
-        wxWindow*   m_parent{ nullptr };
-        wxTextCtrl* m_input_path{ nullptr };
-        bool        downloader_checked{ false };
-
-        void deregister();
-
-    public:
-        Worker(wxWindow* parent);
-        ~Worker() {}
-
-        void allow(bool allow_) { downloader_checked = allow_; }
-        bool is_checked() const { return downloader_checked; }
-        wxString path_name() const { return m_input_path ? m_input_path->GetValue() : wxString(); }
-
-        void set_path_name(wxString name);
-        void set_path_name(const std::string& name);
-
-        bool on_finish();
-        static bool perform_register(const std::string& path);
-#ifdef __linux__
-        static bool perform_registration_linux;
-#endif // __linux__
-    };
-}
 
 class ConfigWizard: public DPIDialog
 {
@@ -76,6 +32,7 @@ public:
         SP_PRINTERS,
         SP_FILAMENTS,
         SP_MATERIALS,
+        SP_CUSTOM,
     };
 
     ConfigWizard(wxWindow *parent);
@@ -87,7 +44,6 @@ public:
 
     // Run the Wizard. Return whether it was completed.
     bool run(RunReason reason, StartPage start_page = SP_WELCOME);
-    void update_login();
 
     static const wxString& name(const bool from_menu = false);
 protected:

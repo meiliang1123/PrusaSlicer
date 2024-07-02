@@ -8,20 +8,12 @@
 #include "3DScene.hpp"
 #include "GUI_App.hpp"
 #include "GLShader.hpp"
-#if ENABLE_GLMODEL_STATISTICS
-#include "Plater.hpp"
-#include "GLCanvas3D.hpp"
-#endif // ENABLE_GLMODEL_STATISTICS
 
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Polygon.hpp"
 #include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
-
-#if ENABLE_GLMODEL_STATISTICS
-#include <imgui/imgui_internal.h>
-#endif // ENABLE_GLMODEL_STATISTICS
 
 #include <boost/filesystem/operations.hpp>
 #include <boost/algorithm/string/predicate.hpp>
@@ -91,8 +83,22 @@ void GLModel::Geometry::add_vertex(const Vec3f& position)
 void GLModel::Geometry::add_vertex(const Vec3f& position, const Vec2f& tex_coord)
 {
     assert(format.vertex_layout == EVertexLayout::P3T2);
-    vertices.insert(vertices.end(), position.data(), position.data() + 3);
-    vertices.insert(vertices.end(), tex_coord.data(), tex_coord.data() + 2);
+    vertices.emplace_back(position.x());
+    vertices.emplace_back(position.y());
+    vertices.emplace_back(position.z());
+    vertices.emplace_back(tex_coord.x());
+    vertices.emplace_back(tex_coord.y());
+}
+
+void GLModel::Geometry::add_vertex(const Vec3f& position, const Vec3f& normal)
+{
+    assert(format.vertex_layout == EVertexLayout::P3N3);
+    vertices.emplace_back(position.x());
+    vertices.emplace_back(position.y());
+    vertices.emplace_back(position.z());
+    vertices.emplace_back(normal.x());
+    vertices.emplace_back(normal.y());
+    vertices.emplace_back(normal.z());
 }
 
 void GLModel::Geometry::add_vertex(const Vec3f& position, const Vec3f& normal, const Vec2f& tex_coord)
@@ -106,20 +112,6 @@ void GLModel::Geometry::add_vertex(const Vec3f& position, const Vec3f& normal, c
     vertices.emplace_back(normal.z());
     vertices.emplace_back(tex_coord.x());
     vertices.emplace_back(tex_coord.y());
-}
-
-void GLModel::Geometry::add_vertex(const Vec3f& position, const Vec3f& normal, const Vec3f& extra)
-{
-    assert(format.vertex_layout == EVertexLayout::P3N3E3);
-    vertices.emplace_back(position.x());
-    vertices.emplace_back(position.y());
-    vertices.emplace_back(position.z());
-    vertices.emplace_back(normal.x());
-    vertices.emplace_back(normal.y());
-    vertices.emplace_back(normal.z());
-    vertices.emplace_back(extra.x());
-    vertices.emplace_back(extra.y());
-    vertices.emplace_back(extra.z());
 }
 
 void GLModel::Geometry::add_vertex(const Vec4f& position)
@@ -140,6 +132,13 @@ void GLModel::Geometry::add_line(unsigned int id1, unsigned int id2)
 {
     indices.emplace_back(id1);
     indices.emplace_back(id2);
+}
+
+void GLModel::Geometry::add_triangle(unsigned int id1, unsigned int id2, unsigned int id3)
+{
+    indices.emplace_back(id1);
+    indices.emplace_back(id2);
+    indices.emplace_back(id3);
 }
 
 Vec2f GLModel::Geometry::extract_position_2(size_t id) const
@@ -277,7 +276,6 @@ size_t GLModel::Geometry::vertex_stride_floats(const Format& format)
     case EVertexLayout::P3T2:   { return 5; }
     case EVertexLayout::P3N3:   { return 6; }
     case EVertexLayout::P3N3T2: { return 8; }
-    case EVertexLayout::P3N3E3: { return 9; }
     case EVertexLayout::P4:     { return 4; }
     default:                    { assert(false); return 0; }
     };
@@ -292,8 +290,7 @@ size_t GLModel::Geometry::position_stride_floats(const Format& format)
     case EVertexLayout::P3:
     case EVertexLayout::P3T2:
     case EVertexLayout::P3N3:
-    case EVertexLayout::P3N3T2:
-    case EVertexLayout::P3N3E3: { return 3; }
+    case EVertexLayout::P3N3T2: { return 3; }
     case EVertexLayout::P4:     { return 4; }
     default:                    { assert(false); return 0; }
     };
@@ -309,7 +306,6 @@ size_t GLModel::Geometry::position_offset_floats(const Format& format)
     case EVertexLayout::P3T2:
     case EVertexLayout::P3N3:
     case EVertexLayout::P3N3T2:
-    case EVertexLayout::P3N3E3:
     case EVertexLayout::P4:   { return 0; }
     default:                  { assert(false); return 0; }
     };
@@ -320,8 +316,7 @@ size_t GLModel::Geometry::normal_stride_floats(const Format& format)
     switch (format.vertex_layout)
     {
     case EVertexLayout::P3N3:
-    case EVertexLayout::P3N3T2:
-    case EVertexLayout::P3N3E3: { return 3; }
+    case EVertexLayout::P3N3T2: { return 3; }
     default:                    { assert(false); return 0; }
     };
 }
@@ -331,8 +326,7 @@ size_t GLModel::Geometry::normal_offset_floats(const Format& format)
     switch (format.vertex_layout)
     {
     case EVertexLayout::P3N3:
-    case EVertexLayout::P3N3T2:
-    case EVertexLayout::P3N3E3: { return 3; }
+    case EVertexLayout::P3N3T2: { return 3; }
     default:                    { assert(false); return 0; }
     };
 }
@@ -359,24 +353,6 @@ size_t GLModel::Geometry::tex_coord_offset_floats(const Format& format)
     };
 }
 
-size_t GLModel::Geometry::extra_stride_floats(const Format& format)
-{
-    switch (format.vertex_layout)
-    {
-    case EVertexLayout::P3N3E3: { return 3; }
-    default:                    { assert(false); return 0; }
-    };
-}
-
-size_t GLModel::Geometry::extra_offset_floats(const Format& format)
-{
-    switch (format.vertex_layout)
-    {
-    case EVertexLayout::P3N3E3: { return 6; }
-    default:                    { assert(false); return 0; }
-    };
-}
-
 size_t GLModel::Geometry::index_stride_bytes(const Geometry& data)
 {
     switch (data.index_type)
@@ -398,7 +374,6 @@ bool GLModel::Geometry::has_position(const Format& format)
     case EVertexLayout::P3T2:
     case EVertexLayout::P3N3:
     case EVertexLayout::P3N3T2:
-    case EVertexLayout::P3N3E3:
     case EVertexLayout::P4:   { return true; }
     default:                  { assert(false); return false; }
     };
@@ -414,8 +389,7 @@ bool GLModel::Geometry::has_normal(const Format& format)
     case EVertexLayout::P3T2:
     case EVertexLayout::P4:     { return false; }
     case EVertexLayout::P3N3:
-    case EVertexLayout::P3N3T2:
-    case EVertexLayout::P3N3E3: { return true; }
+    case EVertexLayout::P3N3T2: { return true; }
     default:                    { assert(false); return false; }
     };
 }
@@ -430,31 +404,10 @@ bool GLModel::Geometry::has_tex_coord(const Format& format)
     case EVertexLayout::P2:
     case EVertexLayout::P3:
     case EVertexLayout::P3N3:
-    case EVertexLayout::P3N3E3:
     case EVertexLayout::P4:     { return false; }
     default:                    { assert(false); return false; }
     };
 }
-
-bool GLModel::Geometry::has_extra(const Format& format)
-{
-    switch (format.vertex_layout)
-    {
-    case EVertexLayout::P3N3E3: { return true; }
-    case EVertexLayout::P2:
-    case EVertexLayout::P2T2:
-    case EVertexLayout::P3:
-    case EVertexLayout::P3T2:
-    case EVertexLayout::P3N3:
-    case EVertexLayout::P3N3T2:
-    case EVertexLayout::P4:     { return false; }
-    default:                    { assert(false); return false; }
-    };
-}
-
-#if ENABLE_GLMODEL_STATISTICS
-GLModel::Statistics GLModel::s_statistics;
-#endif // ENABLE_GLMODEL_STATISTICS
 
 void GLModel::init_from(Geometry&& data)
 {
@@ -483,55 +436,10 @@ void GLModel::init_from(Geometry&& data)
     }
 }
 
-#if ENABLE_SMOOTH_NORMALS
-void GLModel::init_from(const TriangleMesh& mesh, bool smooth_normals)
-{
-    if (smooth_normals) {
-        if (is_initialized()) {
-            // call reset() if you want to reuse this model
-            assert(false);
-            return;
-        }
-
-        if (mesh.its.vertices.empty() || mesh.its.indices.empty()) {
-            assert(false);
-            return;
-        }
-
-        std::vector<stl_normal> normals;
-        smooth_normals_corner(mesh, normals);
-
-        const indexed_triangle_set& its = mesh.its;
-        Geometry& data = m_render_data.geometry;
-        data.format = { Geometry::EPrimitiveType::Triangles, Geometry::EVertexLayout::P3N3 };
-        data.reserve_vertices(3 * its.indices.size());
-        data.reserve_indices(3 * its.indices.size());
-
-        // vertices
-        for (size_t i = 0; i < its.vertices.size(); ++i) {
-            data.add_vertex(its.vertices[i], normals[i]);
-        }
-
-        // indices
-        for (size_t i = 0; i < its.indices.size(); ++i) {
-            const stl_triangle_vertex_indices& idx = its.indices[i];
-            data.add_triangle((unsigned int)idx(0), (unsigned int)idx(1), (unsigned int)idx(2));
-        }
-
-        // update bounding box
-        for (size_t i = 0; i < vertices_count(); ++i) {
-            m_bounding_box.merge(m_render_data.geometry.extract_position_3(i).cast<double>());
-        }
-    }
-    else
-        init_from(mesh.its);
-}
-#else
 void GLModel::init_from(const TriangleMesh& mesh)
 {
     init_from(mesh.its);
 }
-#endif // ENABLE_SMOOTH_NORMALS
 
 void GLModel::init_from(const indexed_triangle_set& its)
 {
@@ -562,38 +470,6 @@ void GLModel::init_from(const indexed_triangle_set& its)
         }
         vertices_counter += 3;
         data.add_triangle(vertices_counter - 3, vertices_counter - 2, vertices_counter - 1);
-    }
-
-    // update bounding box
-    for (size_t i = 0; i < vertices_count(); ++i) {
-        m_bounding_box.merge(data.extract_position_3(i).cast<double>());
-    }
-}
-
-void GLModel::init_from(const Polygon& polygon, float z)
-{
-    if (is_initialized()) {
-        // call reset() if you want to reuse this model
-        assert(false);
-        return;
-    }
-
-    Geometry& data = m_render_data.geometry;
-    data.format = { Geometry::EPrimitiveType::Lines, Geometry::EVertexLayout::P3 };
-
-    const size_t segments_count = polygon.points.size();
-    data.reserve_vertices(2 * segments_count);
-    data.reserve_indices(2 * segments_count);
-
-    // vertices + indices
-    unsigned int vertices_counter = 0;
-    for (size_t i = 0; i < segments_count; ++i) {
-        const Point& p0 = polygon.points[i];
-        const Point& p1 = (i == segments_count - 1) ? polygon.points.front() : polygon.points[i + 1];
-        data.add_vertex(Vec3f(unscale<float>(p0.x()), unscale<float>(p0.y()), z));
-        data.add_vertex(Vec3f(unscale<float>(p1.x()), unscale<float>(p1.y()), z));
-        vertices_counter += 2;
-        data.add_line(vertices_counter - 2, vertices_counter - 1);
     }
 
     // update bounding box
@@ -674,27 +550,11 @@ void GLModel::reset()
     if (m_render_data.ibo_id > 0) {
         glsafe(::glDeleteBuffers(1, &m_render_data.ibo_id));
         m_render_data.ibo_id = 0;
-#if ENABLE_GLMODEL_STATISTICS
-        s_statistics.gpu_memory.indices.current -= indices_size_bytes();
-#endif // ENABLE_GLMODEL_STATISTICS
     }
     if (m_render_data.vbo_id > 0) {
         glsafe(::glDeleteBuffers(1, &m_render_data.vbo_id));
         m_render_data.vbo_id = 0;
-#if ENABLE_GLMODEL_STATISTICS
-        s_statistics.gpu_memory.vertices.current -= vertices_size_bytes();
-#endif // ENABLE_GLMODEL_STATISTICS
     }
-#if !SLIC3R_OPENGL_ES
-    if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
-        if (m_render_data.vao_id > 0) {
-            glsafe(::glDeleteVertexArrays(1, &m_render_data.vao_id));
-            m_render_data.vao_id = 0;
-        }
-#if !SLIC3R_OPENGL_ES
-    }
-#endif // !SLIC3R_OPENGL_ES
 
     m_render_data.vertices_count = 0;
     m_render_data.indices_count  = 0;
@@ -762,22 +622,12 @@ void GLModel::render(const std::pair<size_t, size_t>& range)
     const bool position = Geometry::has_position(data.format);
     const bool normal = Geometry::has_normal(data.format);
     const bool tex_coord = Geometry::has_tex_coord(data.format);
-    const bool extra = Geometry::has_extra(data.format);
 
-#if !SLIC3R_OPENGL_ES
-    if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
-        glsafe(::glBindVertexArray(m_render_data.vao_id));
-#if !SLIC3R_OPENGL_ES
-    }
-#endif // !SLIC3R_OPENGL_ES
-    // the following binding is needed to set the vertex attributes
     glsafe(::glBindBuffer(GL_ARRAY_BUFFER, m_render_data.vbo_id));
 
-    int position_id  = -1;
-    int normal_id    = -1;
+    int position_id = -1;
+    int normal_id = -1;
     int tex_coord_id = -1;
-    int extra_id     = -1;
 
     if (position) {
         position_id = shader->get_attrib_location("v_position");
@@ -800,21 +650,13 @@ void GLModel::render(const std::pair<size_t, size_t>& range)
             glsafe(::glEnableVertexAttribArray(tex_coord_id));
         }
     }
-    if (extra) {
-        extra_id = shader->get_attrib_location("v_extra");
-        if (extra_id != -1) {
-            glsafe(::glVertexAttribPointer(extra_id, Geometry::extra_stride_floats(data.format), GL_FLOAT, GL_FALSE, vertex_stride_bytes, (const void*)Geometry::extra_offset_bytes(data.format)));
-            glsafe(::glEnableVertexAttribArray(extra_id));
-        }
-    }
 
     shader->set_uniform("uniform_color", data.color);
 
     glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_render_data.ibo_id));
     glsafe(::glDrawElements(mode, range.second - range.first, index_type, (const void*)(range.first * Geometry::index_stride_bytes(data))));
+    glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
 
-    if (extra_id != -1)
-        glsafe(::glDisableVertexAttribArray(extra_id));
     if (tex_coord_id != -1)
         glsafe(::glDisableVertexAttribArray(tex_coord_id));
     if (normal_id != -1)
@@ -823,17 +665,6 @@ void GLModel::render(const std::pair<size_t, size_t>& range)
         glsafe(::glDisableVertexAttribArray(position_id));
 
     glsafe(::glBindBuffer(GL_ARRAY_BUFFER, 0));
-#if !SLIC3R_OPENGL_ES
-    if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
-        glsafe(::glBindVertexArray(0));
-#if !SLIC3R_OPENGL_ES
-    }
-#endif // !SLIC3R_OPENGL_ES
-
-#if ENABLE_GLMODEL_STATISTICS
-    ++s_statistics.render_calls;
-#endif // ENABLE_GLMODEL_STATISTICS
 }
 
 void GLModel::render_instanced(unsigned int instances_vbo, unsigned int instances_count)
@@ -862,14 +693,6 @@ void GLModel::render_instanced(unsigned int instances_vbo, unsigned int instance
             return;
     }
 
-#if !SLIC3R_OPENGL_ES
-    if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
-        glsafe(::glBindVertexArray(m_render_data.vao_id));
-#if !SLIC3R_OPENGL_ES
-    }
-#endif // !SLIC3R_OPENGL_ES
-
     glsafe(::glBindBuffer(GL_ARRAY_BUFFER, instances_vbo));
     const size_t instance_stride = 5 * sizeof(float);
     glsafe(::glVertexAttribPointer(offset_id, 3, GL_FLOAT, GL_FALSE, instance_stride, (const void*)0));
@@ -889,7 +712,6 @@ void GLModel::render_instanced(unsigned int instances_vbo, unsigned int instance
     const bool position = Geometry::has_position(data.format);
     const bool normal   = Geometry::has_normal(data.format);
 
-    // the following binding is needed to set the vertex attributes
     glsafe(::glBindBuffer(GL_ARRAY_BUFFER, m_render_data.vbo_id));
 
     if (position) {
@@ -904,7 +726,9 @@ void GLModel::render_instanced(unsigned int instances_vbo, unsigned int instance
 
     shader->set_uniform("uniform_color", data.color);
 
+    glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_render_data.ibo_id));
     glsafe(::glDrawElementsInstanced(mode, indices_count(), index_type, (const void*)0, instances_count));
+    glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
 
     if (normal)
         glsafe(::glDisableVertexAttribArray(normal_id));
@@ -915,17 +739,6 @@ void GLModel::render_instanced(unsigned int instances_vbo, unsigned int instance
     glsafe(::glDisableVertexAttribArray(offset_id));
 
     glsafe(::glBindBuffer(GL_ARRAY_BUFFER, 0));
-#if !SLIC3R_OPENGL_ES
-    if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
-        glsafe(::glBindVertexArray(0));
-#if !SLIC3R_OPENGL_ES
-    }
-#endif // !SLIC3R_OPENGL_ES
-
-#if ENABLE_GLMODEL_STATISTICS
-    ++s_statistics.render_instanced_calls;
-#endif // ENABLE_GLMODEL_STATISTICS
 }
 
 bool GLModel::send_to_gpu()
@@ -941,31 +754,18 @@ bool GLModel::send_to_gpu()
         return false;
     }
 
-#if !SLIC3R_OPENGL_ES
-    if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
-        glsafe(::glGenVertexArrays(1, &m_render_data.vao_id));
-        glsafe(::glBindVertexArray(m_render_data.vao_id));
-#if !SLIC3R_OPENGL_ES
-    }
-#endif // !SLIC3R_OPENGL_ES
-
     // vertices
     glsafe(::glGenBuffers(1, &m_render_data.vbo_id));
     glsafe(::glBindBuffer(GL_ARRAY_BUFFER, m_render_data.vbo_id));
     glsafe(::glBufferData(GL_ARRAY_BUFFER, data.vertices_size_bytes(), data.vertices.data(), GL_STATIC_DRAW));
     glsafe(::glBindBuffer(GL_ARRAY_BUFFER, 0));
     m_render_data.vertices_count = vertices_count();
-#if ENABLE_GLMODEL_STATISTICS
-    s_statistics.gpu_memory.vertices.current += data.vertices_size_bytes();
-    s_statistics.gpu_memory.vertices.max = std::max(s_statistics.gpu_memory.vertices.current, s_statistics.gpu_memory.vertices.max);
-#endif // ENABLE_GLMODEL_STATISTICS
     data.vertices = std::vector<float>();
 
     // indices
-    const size_t indices_count = data.indices.size();
     glsafe(::glGenBuffers(1, &m_render_data.ibo_id));
     glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_render_data.ibo_id));
+    const size_t indices_count = data.indices.size();
     if (m_render_data.vertices_count <= 256) {
         // convert indices to unsigned char to save gpu memory
         std::vector<unsigned char> reduced_indices(indices_count);
@@ -974,6 +774,7 @@ bool GLModel::send_to_gpu()
         }
         data.index_type = Geometry::EIndexType::UBYTE;
         glsafe(::glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices_count * sizeof(unsigned char), reduced_indices.data(), GL_STATIC_DRAW));
+        glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
     }
     else if (m_render_data.vertices_count <= 65536) {
         // convert indices to unsigned short to save gpu memory
@@ -983,89 +784,18 @@ bool GLModel::send_to_gpu()
         }
         data.index_type = Geometry::EIndexType::USHORT;
         glsafe(::glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices_count * sizeof(unsigned short), reduced_indices.data(), GL_STATIC_DRAW));
+        glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
     }
     else {
         data.index_type = Geometry::EIndexType::UINT;
         glsafe(::glBufferData(GL_ELEMENT_ARRAY_BUFFER, data.indices_size_bytes(), data.indices.data(), GL_STATIC_DRAW));
+        glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
     }
-
     m_render_data.indices_count = indices_count;
-#if ENABLE_GLMODEL_STATISTICS
-    s_statistics.gpu_memory.indices.current += data.indices_size_bytes();
-    s_statistics.gpu_memory.indices.max = std::max(s_statistics.gpu_memory.indices.current, s_statistics.gpu_memory.indices.max);
-#endif // ENABLE_GLMODEL_STATISTICS
     data.indices = std::vector<unsigned int>();
-
-#if !SLIC3R_OPENGL_ES
-    if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
-        glsafe(::glBindVertexArray(0));
-#if !SLIC3R_OPENGL_ES
-    }
-#endif // !SLIC3R_OPENGL_ES
 
     return true;
 }
-
-#if ENABLE_GLMODEL_STATISTICS
-void GLModel::render_statistics()
-{
-    static const float offset = 175.0f;
-    ImGuiWrapper& imgui = *wxGetApp().imgui();
-
-    auto add_memory = [&imgui](const std::string& label, int64_t memory) {
-        auto format_string = [memory](const std::string& units, float value) {
-            return std::to_string(memory) + " bytes (" +
-                Slic3r::float_to_string_decimal_point(float(memory) * value, 3)
-                + " " + units + ")";
-        };
-
-        static const float kb = 1024.0f;
-        static const float inv_kb = 1.0f / kb;
-        static const float mb = 1024.0f * kb;
-        static const float inv_mb = 1.0f / mb;
-        static const float gb = 1024.0f * mb;
-        static const float inv_gb = 1.0f / gb;
-        imgui.text_colored(ImGuiWrapper::COL_ORANGE_LIGHT, label);
-        ImGui::SameLine(offset);
-        if (static_cast<float>(memory) < mb)
-            imgui.text(format_string("KB", inv_kb));
-        else if (static_cast<float>(memory) < gb)
-            imgui.text(format_string("MB", inv_mb));
-        else
-            imgui.text(format_string("GB", inv_gb));
-    };
-
-    auto add_counter = [&imgui](const std::string& label, int64_t counter) {
-        imgui.text_colored(ImGuiWrapper::COL_ORANGE_LIGHT, label);
-        ImGui::SameLine(offset);
-        imgui.text(std::to_string(counter));
-    };
-
-    imgui.set_next_window_pos(0.5f * wxGetApp().plater()->get_current_canvas3D()->get_canvas_size().get_width(), 0.0f, ImGuiCond_Once, 0.5f, 0.0f);
-    ImGui::SetNextWindowSizeConstraints({ 300.0f, 100.0f }, { 600.0f, 900.0f });
-    imgui.begin(std::string("GLModel Statistics"), ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
-    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
-
-    add_counter(std::string("Render calls:"), s_statistics.render_calls);
-    add_counter(std::string("Render instanced calls:"), s_statistics.render_instanced_calls);
-
-    if (ImGui::CollapsingHeader("GPU memory")) {
-        ImGui::Indent(10.0f);
-        if (ImGui::CollapsingHeader("Vertices")) {
-            add_memory(std::string("Current:"), s_statistics.gpu_memory.vertices.current);
-            add_memory(std::string("Max:"), s_statistics.gpu_memory.vertices.max);
-        }
-        if (ImGui::CollapsingHeader("Indices")) {
-            add_memory(std::string("Current:"), s_statistics.gpu_memory.indices.current);
-            add_memory(std::string("Max:"), s_statistics.gpu_memory.indices.max);
-        }
-        ImGui::Unindent(10.0f);
-    }
-
-    imgui.end();
-}
-#endif // ENABLE_GLMODEL_STATISTICS
 
 template<typename Fn>
 inline bool all_vertices_inside(const GLModel::Geometry& geometry, Fn fn)
@@ -1089,33 +819,33 @@ bool contains(const BuildVolume& volume, const GLModel& model, bool ignore_botto
 {
     static constexpr const double epsilon = BuildVolume::BedEpsilon;
     switch (volume.type()) {
-    case BuildVolume::Type::Rectangle:
+    case BuildVolume_Type::Rectangle:
     {
         BoundingBox3Base<Vec3d> build_volume = volume.bounding_volume().inflated(epsilon);
-        if (volume.max_print_height() == 0.0)
+        if (volume.printable_height() == 0.0)
             build_volume.max.z() = std::numeric_limits<double>::max();
         if (ignore_bottom)
             build_volume.min.z() = -std::numeric_limits<double>::max();
         const BoundingBoxf3& model_box = model.get_bounding_box();
         return build_volume.contains(model_box.min) && build_volume.contains(model_box.max);
     }
-    case BuildVolume::Type::Circle:
+    case BuildVolume_Type::Circle:
     {
         const Geometry::Circled& circle = volume.circle();
         const Vec2f c = unscaled<float>(circle.center);
         const float r = unscaled<double>(circle.radius) + float(epsilon);
         const float r2 = sqr(r);
-        return volume.max_print_height() == 0.0 ?
+        return volume.printable_height() == 0.0 ?
             all_vertices_inside(model.get_geometry(), [c, r2](const Vec3f& p) { return (to_2d(p) - c).squaredNorm() <= r2; }) :
 
-            all_vertices_inside(model.get_geometry(), [c, r2, z = volume.max_print_height() + epsilon](const Vec3f& p) { return (to_2d(p) - c).squaredNorm() <= r2 && p.z() <= z; });
+            all_vertices_inside(model.get_geometry(), [c, r2, z = volume.printable_height() + epsilon](const Vec3f& p) { return (to_2d(p) - c).squaredNorm() <= r2 && p.z() <= z; });
     }
-    case BuildVolume::Type::Convex:
+    case BuildVolume_Type::Convex:
         //FIXME doing test on convex hull until we learn to do test on non-convex polygons efficiently.
-    case BuildVolume::Type::Custom:
-        return volume.max_print_height() == 0.0 ?
+    case BuildVolume_Type::Custom:
+        return volume.printable_height() == 0.0 ?
             all_vertices_inside(model.get_geometry(), [&volume](const Vec3f& p) { return Geometry::inside_convex_polygon(volume.top_bottom_convex_hull_decomposition_bed(), to_2d(p).cast<double>()); }) :
-            all_vertices_inside(model.get_geometry(), [&volume, z = volume.max_print_height() + epsilon](const Vec3f& p) { return Geometry::inside_convex_polygon(volume.top_bottom_convex_hull_decomposition_bed(), to_2d(p).cast<double>()) && p.z() <= z; });
+            all_vertices_inside(model.get_geometry(), [&volume, z = volume.printable_height() + epsilon](const Vec3f& p) { return Geometry::inside_convex_polygon(volume.top_bottom_convex_hull_decomposition_bed(), to_2d(p).cast<double>()) && p.z() <= z; });
     default:
         return true;
     }

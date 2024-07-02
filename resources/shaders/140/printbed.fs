@@ -8,8 +8,7 @@ uniform bool transparent_background;
 uniform bool svg_source;
 
 in vec2 tex_coord;
-
-out vec4 out_color;
+out vec4 frag_color;
 
 vec4 svg_color()
 {
@@ -32,7 +31,5 @@ vec4 non_svg_color()
 
 void main()
 {
-	vec4 color = svg_source ? svg_color() : non_svg_color();
-	color.a = transparent_background ? color.a * 0.5 : color.a;
-	out_color = color;
+    frag_color = svg_source ? svg_color() : non_svg_color();
 }

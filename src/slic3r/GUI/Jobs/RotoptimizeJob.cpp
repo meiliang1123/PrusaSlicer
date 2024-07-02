@@ -16,8 +16,6 @@
 #include "slic3r/GUI/GUI_App.hpp"
 #include "libslic3r/AppConfig.hpp"
 
-#include <slic3r/GUI/I18N.hpp>
-
 namespace Slic3r { namespace GUI {
 
 void RotoptimizeJob::prepare()
@@ -61,11 +59,12 @@ void RotoptimizeJob::process(Ctl &ctl)
         sla::RotOptimizeParams{}
             .accuracy(m_accuracy)
             .print_config(&m_default_print_cfg)
-            .statucb([this, &prev_status, &ctl, &statustxt](int s)
+            .statucb([this, &prev_status, &ctl/*, &statustxt*/](int s)
         {
             if (s > 0 && s < 100)
-                ctl.update_status(prev_status + s / m_selected_object_ids.size(),
-                                  statustxt);
+                ;
+                // ctl.update_status(prev_status + s / m_selected_object_ids.size(),
+                //               statustxt);
 
             return !ctl.was_canceled();
         });
@@ -83,9 +82,8 @@ void RotoptimizeJob::process(Ctl &ctl)
         if (ctl.was_canceled()) break;
     }
 
-    ctl.update_status(100, ctl.was_canceled() ?
-                               _u8L("Orientation search canceled.") :
-                               _u8L("Orientation found."));
+    ctl.update_status(100, ctl.was_canceled() ? _u8L("Orientation search canceled.") :
+                                        _u8L("Orientation found."));
 }
 
 RotoptimizeJob::RotoptimizeJob() : m_plater{wxGetApp().plater()} { prepare(); }
@@ -105,37 +103,27 @@ void RotoptimizeJob::finalize(bool canceled, std::exception_ptr &eptr)
 
             auto    trmatrix = oi->get_transformation().get_matrix();
             Polygon trchull  = o->convex_hull_2d(trmatrix);
-            
-            if (!trchull.empty()) {
-                MinAreaBoundigBox rotbb(trchull, MinAreaBoundigBox::pcConvex);
-                double            phi = rotbb.angle_to_X();
-    
-                // The box should be landscape
-                if(rotbb.width() < rotbb.height()) phi += PI / 2;
-    
-                Vec3d rt = oi->get_rotation(); rt(Z) += phi;
-    
-                oi->set_rotation(rt);
-            }
+
+            MinAreaBoundigBox rotbb(trchull, MinAreaBoundigBox::pcConvex);
+            double            phi = rotbb.angle_to_X();
+
+            // The box should be landscape
+            if(rotbb.width() < rotbb.height()) phi += PI / 2;
+
+            Vec3d rt = oi->get_rotation(); rt(Z) += phi;
+
+            oi->set_rotation(rt);
         }
 
         // Correct the z offset of the object which was corrupted be
         // the rotation
         o->ensure_on_bed();
+
+//        m_plater->find_new_position(o->instances);
     }
 
     if (!canceled)
         m_plater->update();
-}
-
-std::string RotoptimizeJob::get_method_name(size_t i)
-{
-    return into_u8(_(Methods[i].name));
-}
-
-std::string RotoptimizeJob::get_method_description(size_t i)
-{
-    return into_u8(_(Methods[i].descr));
 }
 
 }}

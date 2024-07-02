@@ -16,7 +16,7 @@ class GLCanvas3D;
 
 class GLSelectionRectangle {
 public:
-    enum class EState {
+    enum EState {
             Off,
             Select,
             Deselect
@@ -37,9 +37,7 @@ public:
 
     void render(const GLCanvas3D& canvas);
 
-    bool is_dragging() const { return m_state != EState::Off; }
-    bool is_empty() const    { return m_state == EState::Off || m_start_corner.isApprox(m_end_corner); }
-
+    bool is_dragging() const { return m_state != Off; }
     EState get_state() const { return m_state; }
 
     float get_width() const  { return std::abs(m_start_corner.x() - m_end_corner.x()); }
@@ -50,7 +48,7 @@ public:
     float get_bottom() const { return std::min(m_start_corner.y(), m_end_corner.y()); }
 
 private:
-    EState m_state{ EState::Off };
+    EState m_state{ Off };
     Vec2d m_start_corner{ Vec2d::Zero() };
     Vec2d m_end_corner{ Vec2d::Zero() };
     GLModel m_rectangle;

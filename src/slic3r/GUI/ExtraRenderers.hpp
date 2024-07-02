@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2020 - 2021 Oleksandra Iushchenko @YuSanka, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_GUI_ExtraRenderers_hpp_
 #define slic3r_GUI_ExtraRenderers_hpp_
 
@@ -58,7 +54,7 @@ private:
 DECLARE_VARIANT_OBJECT(DataViewBitmapText)
 
 // ----------------------------------------------------------------------------
-// BitmapTextRenderer
+// BitmapTextRenderer - an editable text box within a DataView item
 // ----------------------------------------------------------------------------
 #if ENABLE_NONCUSTOM_DATA_VIEW_RENDERING
 class BitmapTextRenderer : public wxDataViewRenderer
@@ -69,11 +65,11 @@ class BitmapTextRenderer : public wxDataViewCustomRenderer
 public:
     BitmapTextRenderer(bool use_markup = false,
         wxDataViewCellMode mode =
-#ifdef __WXOSX__
-        wxDATAVIEW_CELL_INERT
-#else
+//#ifdef __WXOSX__
+//        wxDATAVIEW_CELL_INERT
+//#else
         wxDATAVIEW_CELL_EDITABLE
-#endif
+//#endif
 
         , int align = wxDVR_DEFAULT_ALIGNMENT
 #if ENABLE_NONCUSTOM_DATA_VIEW_RENDERING
@@ -101,11 +97,11 @@ public:
 
     bool        HasEditorCtrl() const override
     {
-#ifdef __WXOSX__
-        return false;
-#else
+//#ifdef __WXOSX__
+//        return false;
+//#else
         return true;
-#endif
+//#endif
     }
     wxWindow*   CreateEditorCtrl(wxWindow* parent, wxRect labelRect, const wxVariant& value) override;
     bool        GetValueFromEditorCtrl(wxWindow* ctrl, wxVariant& value) override;
@@ -130,18 +126,18 @@ private:
 
 
 // ----------------------------------------------------------------------------
-// BitmapChoiceRenderer
+// BitmapChoiceRenderer - Creates an editable ComboBox within a DataView item
 // ----------------------------------------------------------------------------
 
 class BitmapChoiceRenderer : public wxDataViewCustomRenderer
 {
 public:
     BitmapChoiceRenderer(wxDataViewCellMode mode =
-#ifdef __WXOSX__
-        wxDATAVIEW_CELL_INERT
-#else
+//#ifdef __WXOSX__
+//        wxDATAVIEW_CELL_INERT
+//#else
         wxDATAVIEW_CELL_EDITABLE
-#endif
+//#endif
         , int align = wxALIGN_LEFT | wxALIGN_CENTER_VERTICAL
     ) : wxDataViewCustomRenderer(wxT("DataViewBitmapText"), mode, align) {}
 
@@ -157,11 +153,13 @@ public:
 
     void        set_can_create_editor_ctrl_function(std::function<bool()> can_create_fn) { can_create_editor_ctrl = can_create_fn; }
     void        set_default_extruder_idx(std::function<int()> default_extruder_idx_fn)   { get_default_extruder_idx = default_extruder_idx_fn; }
+    void        set_has_default_extruder(std::function<bool()> has_default_extruder_fn) { has_default_extruder = has_default_extruder_fn; }
 
 private:
     DataViewBitmapText      m_value;
     std::function<bool()>   can_create_editor_ctrl  { nullptr };
     std::function<int()>    get_default_extruder_idx{ nullptr };
+    std::function<bool()>   has_default_extruder{ nullptr };
 };
 
 

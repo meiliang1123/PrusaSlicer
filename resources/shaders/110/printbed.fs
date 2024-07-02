@@ -30,7 +30,5 @@ vec4 non_svg_color()
 
 void main()
 {
-	vec4 color = svg_source ? svg_color() : non_svg_color();
-	color.a = transparent_background ? color.a * 0.5 : color.a;
-	gl_FragColor = color;
+    gl_FragColor = svg_source ? svg_color() : non_svg_color();
 }

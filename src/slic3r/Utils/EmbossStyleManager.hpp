@@ -51,7 +51,7 @@ public:
     /// </summary>
     /// <param name="item_to_store">Configuration</param>
     /// <param name="use_modification">When true cache state will be used for store</param>
-    /// <param name="store_active_index">When treu also store current activ index</param>
+    /// <param name="use_modification">When true store activ index into configuration</param>
     /// <returns>True on succes otherwise False.</returns>
     bool store_styles_to_app_config(bool use_modification = true, bool store_active_index = true);
 
@@ -170,7 +170,7 @@ public:
     /// </summary>
     /// <param name="max_size">Maximal width and height of one style texture</param>
     /// <param name="text">Text to render by style</param>
-    void init_style_images(const Vec2i& max_size, const std::string &text);
+    void init_style_images(const Vec2i32& max_size, const std::string &text);
     void free_style_images();
     
     // access to all managed font styles
@@ -213,8 +213,8 @@ public:
         {
             return EmbossStyle::operator==(other) && 
                 projection == other.projection &&
-                is_approx(distance, other.distance) &&
-                is_approx(angle, other.angle);
+                distance == other.distance && 
+                angle == other.angle;
         }
 
         // cache for view font name with maximal width in imgui
@@ -295,7 +295,7 @@ private:
         // Keep styles to render
         Items styles;
         // Maximal width and height in pixels of image
-        Vec2i max_size;
+        Vec2i32 max_size;
         // Text to render
         std::string text;
 

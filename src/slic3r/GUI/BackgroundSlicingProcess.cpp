@@ -1,15 +1,8 @@
-///|/ Copyright (c) Prusa Research 2018 - 2023 Lukáš Matěna @lukasmatena, Oleksandra Iushchenko @YuSanka, Vojtěch Bubník @bubnikv, Pavel Mikuš @Godrak, David Kocík @kocikdav, Enrico Turri @enricoturri1966, Tomáš Mészáros @tamasmeszaros, Roman Beránek @zavorka, Vojtěch Král @vojtechkral
-///|/ Copyright (c) 2022 ole00 @ole00
-///|/ Copyright (c) 2021 Ilya @xorza
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "BackgroundSlicingProcess.hpp"
 #include "GUI_App.hpp"
 #include "GUI.hpp"
 #include "MainFrame.hpp"
 #include "format.hpp"
-#include "libslic3r/GCode/Thumbnails.hpp"
 
 #include <wx/app.h>
 #include <wx/panel.h>
@@ -40,7 +33,7 @@
 #include <boost/log/trivial.hpp>
 #include <boost/nowide/cstdio.hpp>
 #include "I18N.hpp"
-#include "RemovableDriveManager.hpp"
+//#include "RemovableDriveManager.hpp"
 
 #include "slic3r/GUI/Plater.hpp"
 
@@ -53,9 +46,10 @@ bool SlicingProcessCompletedEvent::critical_error() const
 	} catch (const Slic3r::SlicingError &) {
 		// Exception derived from SlicingError is non-critical.
 		return false;
-	} catch (...) {
-	}
-	return true;
+    } catch (const Slic3r::SlicingErrors &) {
+        return false;
+    } catch (...) {}
+    return true;
 }
 
 bool SlicingProcessCompletedEvent::invalidate_plater() const
@@ -76,58 +70,106 @@ bool SlicingProcessCompletedEvent::invalidate_plater() const
 	return false;
 }
 
-std::pair<std::string, bool> SlicingProcessCompletedEvent::format_error_message() const
+std::pair<std::string, std::vector<size_t>> SlicingProcessCompletedEvent::format_error_message() const
 {
 	std::string error;
-	bool        monospace = false;
+    size_t      monospace = 0;
 	try {
 		this->rethrow_exception();
     } catch (const std::bad_alloc &ex) {
-		error = GUI::format(_L("%s has encountered an error. It was likely caused by running out of memory. "
-                              "If you are sure you have enough RAM on your system, this may also be a bug and we would "
-                              "be glad if you reported it."), SLIC3R_APP_NAME);
-        error += "\n\n" + std::string(ex.what());
+        wxString errmsg = GUI::from_u8(boost::format(_utf8(L("A error occurred. Maybe memory of system is not enough or it's a bug "
+			                  "of the program"))).str());
+        error = std::string(errmsg.ToUTF8()) + "\n" + std::string(ex.what());
     } catch (const HardCrash &ex) {
-        error = GUI::format(_L("PrusaSlicer has encountered a fatal error: \"%1%\""), ex.what()) + "\n\n" +
-        		_u8L("Please save your project and restart PrusaSlicer. "
-                     "We would be glad if you reported the issue.");
+        error = GUI::format("A fatal error occurred: \"%1%\"", ex.what()) + "\n" +
+        		_u8L("Please save project and restart the program. ");
     } catch (PlaceholderParserError &ex) {
 		error = ex.what();
-		monospace = true;
-    } catch (std::exception &ex) {
+		monospace = 1;
+    } catch (SlicingError &ex) {
 		error = ex.what();
-	} catch (...) {
-		error = "Unknown C++ exception.";
-	}
-	return std::make_pair(std::move(error), monospace);
+		monospace = ex.objectId();
+    } catch (SlicingErrors &exs) {
+        std::vector<size_t> ids;
+        for (auto &ex : exs.errors_) {
+            error     = ex.what();
+            monospace = ex.objectId();
+            ids.push_back(monospace);
+        }
+        return std::make_pair(std::move(error), ids);
+    } catch (std::exception &ex) {
+        error = ex.what();
+    } catch (...) {
+        error = "Unknown C++ exception.";
+    }
+    return std::make_pair(std::move(error), std::vector<size_t>{monospace});
 }
 
 BackgroundSlicingProcess::BackgroundSlicingProcess()
 {
+	//BBS: move this logic to part plate
+#if 0
     boost::filesystem::path temp_path(wxStandardPaths::Get().GetTempDir().utf8_str().data());
     temp_path /= (boost::format(".%1%.gcode") % get_current_pid()).str();
 	m_temp_output_path = temp_path.string();
+#endif
 }
 
-BackgroundSlicingProcess::~BackgroundSlicingProcess() 
-{ 
+BackgroundSlicingProcess::~BackgroundSlicingProcess()
+{
 	this->stop();
 	this->join_background_thread();
-	boost::nowide::remove(m_temp_output_path.c_str());
+	//BBS: move this logic to part plate
+	//boost::nowide::remove(m_temp_output_path.c_str());
 }
 
+//BBS: switch the print in background slicing process
+bool BackgroundSlicingProcess::switch_print_preprocess()
+{
+	bool result = true;
+
+	/*switch (m_printer_tech) {
+	case ptFFF: m_print = m_fff_print; break;
+	case ptSLA: m_print = m_sla_print; break;
+	default: assert(false); break;
+	}*/
+	return result;
+}
+
+//BBS: judge whether can switch the print
+bool BackgroundSlicingProcess::can_switch_print()
+{
+	bool result = true;
+
+	if (m_state == STATE_RUNNING)
+	{
+		//currently it is on slicing, judge whether the slice result is valid or not
+		//if (m_current_plate->is_slice_result_valid())
+		{
+			result = false;
+			BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": slicing plate's plate_id %1%, on slicing, can not switch print") % m_current_plate->get_index();
+		}
+	}
+
+	return result;
+}
+
+//BBS: select the printer technology
 bool BackgroundSlicingProcess::select_technology(PrinterTechnology tech)
 {
 	bool changed = false;
-	if (m_print == nullptr || m_print->technology() != tech) {
+	if (m_printer_tech != tech) {
+		BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": change the printer technology from %1% to %2%") % m_printer_tech % tech;
+		m_printer_tech = tech;
 		if (m_print != nullptr)
 			this->reset();
-		switch (tech) {
-		case ptFFF: m_print = m_fff_print; break;
-		case ptSLA: m_print = m_sla_print; break;
-        default: assert(false); break;
-		}
 		changed = true;
+	}
+
+	switch (tech) {
+	case ptFFF: m_print = m_fff_print; break;
+	case ptSLA: m_print = m_sla_print; break;
+	default: assert(false); break;
 	}
 	assert(m_print != nullptr);
 	return changed;
@@ -135,7 +177,9 @@ bool BackgroundSlicingProcess::select_technology(PrinterTechnology tech)
 
 PrinterTechnology BackgroundSlicingProcess::current_printer_technology() const
 {
-	return m_print->technology();
+	//BBS: as the m_printer is changed frequently when switch plates, use m_printer_tech directly
+	return m_printer_tech;
+	//return m_print->technology();
 }
 
 std::string BackgroundSlicingProcess::output_filepath_for_project(const boost::filesystem::path &project_path)
@@ -150,26 +194,81 @@ std::string BackgroundSlicingProcess::output_filepath_for_project(const boost::f
 // from the G-code generator.
 void BackgroundSlicingProcess::process_fff()
 {
-	assert(m_print == m_fff_print);
-	m_print->process();
-	wxCommandEvent evt(m_event_slicing_completed_id);
-	// Post the Slicing Finished message for the G-code viewer to update.
-	// Passing the timestamp 
-	evt.SetInt((int)(m_fff_print->step_state_with_timestamp(PrintStep::psSlicingFinished).timestamp));
-	wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
-	m_fff_print->export_gcode(m_temp_output_path, m_gcode_result, [this](const ThumbnailsParams& params) { return this->render_thumbnails(params); });
+    assert(m_print == m_fff_print);
+    m_fff_print->is_BBL_printer() = wxGetApp().preset_bundle->is_bbl_vendor();
+	//BBS: add the logic to process from an existed gcode file
+	if (m_print->finished()) {
+		BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: skip slicing, to process previous gcode file")%__LINE__;
+		m_fff_print->set_status(80, _utf8(L("Processing G-Code from Previous file...")));
+		wxCommandEvent evt(m_event_slicing_completed_id);
+		// Post the Slicing Finished message for the G-code viewer to update.
+		// Passing the timestamp 
+		evt.SetInt((int)(m_fff_print->step_state_with_timestamp(PrintStep::psSlicingFinished).timestamp));
+		wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
+
+		m_temp_output_path = this->get_current_plate()->get_tmp_gcode_path();
+		if (! m_export_path.empty()) {
+			BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: export gcode from %2% directly to %3%")%__LINE__%m_temp_output_path %m_export_path;
+		}
+		else {
+            if (m_upload_job.empty()) {
+                m_fff_print->export_gcode_from_previous_file(m_temp_output_path, m_gcode_result, [this](const ThumbnailsParams &params) {
+                    return this->render_thumbnails(params);
+                });
+            }
+            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: export_gcode_from_previous_file from %2% finished")%__LINE__ % m_temp_output_path;
+		}
+	}
+	else {
+		//BBS: reset the gcode before reload_print in slicing_completed event processing
+		//FIX the gcode rename failed issue
+		BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: will start slicing, reset gcode_result %2% firstly")%__LINE__%m_gcode_result;
+		m_gcode_result->reset();
+
+		BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: gcode_result reseted, will start print::process")%__LINE__;
+		m_print->process();
+		BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: after print::process, send slicing complete event to gui...")%__LINE__;
+
+		wxCommandEvent evt(m_event_slicing_completed_id);
+		// Post the Slicing Finished message for the G-code viewer to update.
+		// Passing the timestamp
+		evt.SetInt((int)(m_fff_print->step_state_with_timestamp(PrintStep::psSlicingFinished).timestamp));
+		wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
+
+		//BBS: add plate index into render params
+		m_temp_output_path = this->get_current_plate()->get_tmp_gcode_path();
+		m_fff_print->export_gcode(m_temp_output_path, m_gcode_result, [this](const ThumbnailsParams& params) { return this->render_thumbnails(params); });
+		if(m_fff_print->is_BBL_printer())
+			run_post_process_scripts(m_temp_output_path, false, "File", m_temp_output_path, m_fff_print->full_print_config());
+
+		BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": export gcode finished");
+	}
 	if (this->set_step_started(bspsGCodeFinalize)) {
 	    if (! m_export_path.empty()) {
 			wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, new wxCommandEvent(m_event_export_began_id));
-			finalize_gcode();
+			if(!m_fff_print->is_BBL_printer())
+				finalize_gcode();
+			else
+				export_gcode();
 	    } else if (! m_upload_job.empty()) {
 			wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, new wxCommandEvent(m_event_export_began_id));
 			prepare_upload();
 	    } else {
-			m_print->set_status(100, _u8L("Slicing complete"));
+			m_print->set_status(100, _utf8(L("Slicing complete")));
 	    }
 		this->set_step_done(bspsGCodeFinalize);
 	}
+}
+
+static void write_thumbnail(Zipper& zipper, const ThumbnailData& data)
+{
+    size_t png_size = 0;
+    void* png_data = tdefl_write_image_to_png_file_in_memory_ex((const void*)data.pixels.data(), data.width, data.height, 4, &png_size, MZ_DEFAULT_LEVEL, 1);
+    if (png_data != nullptr)
+    {
+        zipper.add_entry("thumbnail/thumbnail" + std::to_string(data.width) + "x" + std::to_string(data.height) + ".png", (const std::uint8_t*)png_data, png_size);
+        mz_free(png_data);
+    }
 }
 
 void BackgroundSlicingProcess::process_sla()
@@ -182,29 +281,22 @@ void BackgroundSlicingProcess::process_sla()
 
             const std::string export_path = m_sla_print->print_statistics().finalize_output_path(m_export_path);
 
-			auto [thumbnails_list, errors] = GCodeThumbnails::make_and_check_thumbnail_list(current_print()->full_print_config());
+			//BBS: add plate id for thumbnail generation
+            ThumbnailsList thumbnails = this->render_thumbnails(
+				ThumbnailsParams{ current_print()->full_print_config().option<ConfigOptionPoints>("thumbnails")->values, true, true, true, true, 0 });
 
-			if (errors != enum_bitmask<ThumbnailError>()) {
-				std::string error_str = format("Invalid thumbnails value:");
-				error_str += GCodeThumbnails::get_error_string(errors);
-				throw Slic3r::ExportError(error_str);
-			}
+            Zipper zipper(export_path);
+            m_sla_archive.export_print(zipper, *m_sla_print);																											         // true, false, true, true); // renders also supports and pad
+			for (const ThumbnailData& data : thumbnails)
+                if (data.is_valid())
+                    write_thumbnail(zipper, data);
+            zipper.finalize();
 
-			Vec2ds 	sizes;
-			if (!thumbnails_list.empty()) {
-				sizes.reserve(thumbnails_list.size());
-				for (const auto& [format, size] : thumbnails_list)
-					sizes.emplace_back(size);
-			}
-			ThumbnailsList thumbnails = this->render_thumbnails(ThumbnailsParams{sizes, true, true, true, true });
-			m_sla_print->export_print(export_path, thumbnails);
-
-            m_print->set_status(100, GUI::format(_L("Masked SLA file exported to %1%"), export_path));
-        } else if (! m_upload_job.empty()) {
-			wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, new wxCommandEvent(m_event_export_began_id));
-            prepare_upload();
+            //m_print->set_status(100, (boost::format(_utf8(L("Masked SLA file exported to %1%"))) % export_path).str());
+			m_print->set_status(100, (boost::format(_utf8("Masked SLA file exported to %1%")) % export_path).str());
         } else {
-			m_print->set_status(100, _u8L("Slicing complete"));
+			//m_print->set_status(100, _utf8(L("Slicing complete")));
+			m_print->set_status(100, _utf8("Slicing complete"));
         }
         this->set_step_done(bspsGCodeFinalize);
     }
@@ -212,14 +304,9 @@ void BackgroundSlicingProcess::process_sla()
 
 void BackgroundSlicingProcess::thread_proc()
 {
-	set_current_thread_name("slic3r_BgSlcPcs");
+	//BBS: thread name
+	set_current_thread_name("bbl_BgSlcPcs");
     name_tbb_thread_pool_threads_set_locale();
-
-    // Set "C" locales and enforce OSX QoS level on all threads entering an arena.
-    // The cost of the callback is quite low: The callback is called once per thread
-    // entering a parallel loop and the callback is guarded with a thread local
-    // variable to be executed just once.
-	TBBLocalesSetter setter;
 
 	assert(m_print != nullptr);
 	assert(m_print == m_fff_print || m_print == m_sla_print);
@@ -229,7 +316,8 @@ void BackgroundSlicingProcess::thread_proc()
 	lck.unlock();
 	m_condition.notify_one();
 	for (;;) {
-		assert(m_state == STATE_IDLE || m_state == STATE_CANCELED || m_state == STATE_FINISHED);
+		//BBS: sometimes the state has already been set in the start function
+		//assert(m_state == STATE_IDLE || m_state == STATE_CANCELED || m_state == STATE_FINISHED || m_state == STATE_STARTED);
 		// Wait until a new task is ready to be executed, or this thread should be finished.
 		lck.lock();
 		m_condition.wait(lck, [this](){ return m_state == STATE_STARTED || m_state == STATE_EXIT; });
@@ -238,6 +326,8 @@ void BackgroundSlicingProcess::thread_proc()
 			break;
 		// Process the background slicing task.
 		m_state = STATE_RUNNING;
+		//BBS: internal cancel
+		m_internal_cancelled = false;
 		lck.unlock();
 		std::exception_ptr exception;
 #ifdef _WIN32
@@ -248,22 +338,25 @@ void BackgroundSlicingProcess::thread_proc()
 		m_print->finalize();
 		lck.lock();
 		m_state = m_print->canceled() ? STATE_CANCELED : STATE_FINISHED;
+		BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": process finished, state %1%, print cancel_status %2%")%m_state %m_print->cancel_status();
 		if (m_print->cancel_status() != Print::CANCELED_INTERNAL) {
 			// Only post the canceled event, if canceled by user.
 			// Don't post the canceled event, if canceled from Print::apply().
-			SlicingProcessCompletedEvent evt(m_event_finished_id, 0, 
+			SlicingProcessCompletedEvent evt(m_event_finished_id, 0,
 				(m_state == STATE_CANCELED) ? SlicingProcessCompletedEvent::Cancelled :
 				exception ? SlicingProcessCompletedEvent::Error : SlicingProcessCompletedEvent::Finished, exception);
-        	wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
-        	// Cancelled by the user, not internally, thus cleanup() was not called yet.
-        	// Otherwise cleanup() is called from Print::apply()
-        	m_print->cleanup();
-        }
-	    m_print->restart();
+			BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": send SlicingProcessCompletedEvent to main, status %1%")%evt.status();
+			wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
+		}
+		else {
+			//BBS: internal cancel
+			m_internal_cancelled = true;
+		}
+		m_print->restart();
 		lck.unlock();
 		// Let the UI thread wake up if it is waiting for the background task to finish.
-	    m_condition.notify_one();
-	    // Let the UI thread see the result.
+		m_condition.notify_one();
+		// Let the UI thread see the result.
 	}
 	m_state = STATE_EXITED;
 	lck.unlock();
@@ -351,8 +444,10 @@ void BackgroundSlicingProcess::call_process(std::exception_ptr &ex) throw()
 		// Canceled, this is all right.
 		assert(m_print->canceled());
 		ex = std::current_exception();
+		BOOST_LOG_TRIVIAL(error) <<__FUNCTION__ << ":got cancelled exception" << std::endl;
 	} catch (...) {
 		ex = std::current_exception();
+		BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ":got other exception" << std::endl;
 	}
 }
 
@@ -410,9 +505,11 @@ void BackgroundSlicingProcess::join_background_thread()
 
 bool BackgroundSlicingProcess::start()
 {
-	if (m_print->empty())
-		// The print is empty (no object in Model, or all objects are out of the print bed).
-		return false;
+	if (m_print->empty()) {
+		if (!m_current_plate  || !m_current_plate->is_slice_result_valid())
+			// The print is empty (no object in Model, or all objects are out of the print bed).
+		    return false;
+	}
 
 	std::unique_lock<std::mutex> lck(m_mutex);
 	if (m_state == STATE_INITIAL) {
@@ -444,6 +541,7 @@ bool BackgroundSlicingProcess::start()
 // To be called on the UI thread.
 bool BackgroundSlicingProcess::stop()
 {
+	BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< ", enter"<<std::endl;
 	// m_print->state_mutex() shall NOT be held. Unfortunately there is no interface to test for it.
 	std::unique_lock<std::mutex> lck(m_mutex);
 	if (m_state == STATE_INITIAL) {
@@ -465,6 +563,7 @@ bool BackgroundSlicingProcess::stop()
 		m_state = STATE_IDLE;
 		m_print->set_cancel_callback([](){});
 	}
+	BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< ", exit"<<std::endl;
 //	m_export_path.clear();
 	return true;
 }
@@ -473,7 +572,9 @@ bool BackgroundSlicingProcess::reset()
 {
 	bool stopped = this->stop();
 	this->reset_export();
-	m_print->clear();
+	//BBS: don't clear print for print is not owned by background slicing process anymore
+	//do it in the part_plate
+	//m_print->clear();
 	this->invalidate_all_steps();
 	return stopped;
 }
@@ -483,6 +584,7 @@ bool BackgroundSlicingProcess::reset()
 // This function shall not trigger any UI update through the wxWidgets event.
 void BackgroundSlicingProcess::stop_internal()
 {
+	BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< ", enter"<<std::endl;
 	// m_print->state_mutex() shall be held. Unfortunately there is no interface to test for it.
 	if (m_state == STATE_IDLE)
 		// The worker thread is waiting on m_mutex/m_condition for wake up. The following lock of the mutex would block.
@@ -506,9 +608,10 @@ void BackgroundSlicingProcess::stop_internal()
 	// In the "Canceled" state. Reset the state to "Idle".
 	m_state = STATE_IDLE;
 	m_print->set_cancel_callback([](){});
+	BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< ", exit"<<std::endl;
 }
 
-// Execute task from background thread on the UI thread. Returns true if processed, false if cancelled. 
+// Execute task from background thread on the UI thread. Returns true if processed, false if cancelled.
 bool BackgroundSlicingProcess::execute_ui_task(std::function<void()> task)
 {
 	bool running = false;
@@ -568,10 +671,13 @@ bool BackgroundSlicingProcess::empty() const
 	return m_print->empty();
 }
 
-std::string BackgroundSlicingProcess::validate(std::vector<std::string>* warnings)
+StringObjectException BackgroundSlicingProcess::validate(StringObjectException *warning, Polygons* collison_polygons, std::vector<std::pair<Polygon, float>>* height_polygons)
 {
 	assert(m_print != nullptr);
-    return m_print->validate(warnings);
+    assert(m_print == m_fff_print);
+
+    m_fff_print->is_BBL_printer() = wxGetApp().preset_bundle->is_bbl_vendor();
+    return m_print->validate(warning, collison_polygons, height_polygons);
 }
 
 // Apply config over the print. Returns false, if the new config values caused any of the already
@@ -580,12 +686,16 @@ Print::ApplyStatus BackgroundSlicingProcess::apply(const Model &model, const Dyn
 {
 	assert(m_print != nullptr);
 	assert(config.opt_enum<PrinterTechnology>("printer_technology") == m_print->technology());
-	Print::ApplyStatus invalidated = m_print->apply(model, config);
+	// TODO: add partplate config
+	DynamicPrintConfig new_config = config;
+	new_config.apply(*m_current_plate->config());
+	Print::ApplyStatus invalidated = m_print->apply(model, new_config);
 	if ((invalidated & PrintBase::APPLY_STATUS_INVALIDATED) != 0 && m_print->technology() == ptFFF &&
 		!m_fff_print->is_step_done(psGCodeExport)) {
 		// Some FFF status was invalidated, and the G-code was not exported yet.
 		// Let the G-code preview UI know that the final G-code preview is not valid.
 		// In addition, this early memory deallocation reduces memory footprint.
+		BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": invalide gcode result %1%, will reset soon")%m_gcode_result;
 		if (m_gcode_result != nullptr)
 			m_gcode_result->reset();
 	}
@@ -600,7 +710,7 @@ void BackgroundSlicingProcess::set_task(const PrintBase::TaskParams &params)
 
 // Set the output path of the G-code.
 void BackgroundSlicingProcess::schedule_export(const std::string &path, bool export_path_on_removable_media)
-{ 
+{
 	assert(m_export_path.empty());
 	if (! m_export_path.empty())
 		return;
@@ -638,17 +748,17 @@ void BackgroundSlicingProcess::reset_export()
 }
 
 bool BackgroundSlicingProcess::set_step_started(BackgroundSlicingProcessStep step)
-{ 
+{
 	return m_step_state.set_started(step, m_print->state_mutex(), [this](){ this->throw_if_canceled(); });
 }
 
 void BackgroundSlicingProcess::set_step_done(BackgroundSlicingProcessStep step)
-{ 
+{
 	m_step_state.set_done(step, m_print->state_mutex(), [this](){ this->throw_if_canceled(); });
 }
 
 bool BackgroundSlicingProcess::is_step_done(BackgroundSlicingProcessStep step) const
-{ 
+{
 	return m_step_state.is_done(step, m_print->state_mutex());
 }
 
@@ -659,7 +769,7 @@ bool BackgroundSlicingProcess::invalidate_step(BackgroundSlicingProcessStep step
 }
 
 bool BackgroundSlicingProcess::invalidate_all_steps()
-{ 
+{
 	return m_step_state.invalidate_all([this](){ this->stop_internal(); });
 }
 
@@ -687,6 +797,7 @@ void BackgroundSlicingProcess::finalize_gcode()
 				BOOST_LOG_TRIVIAL(error) << "Failed to remove temp file " << output_path << ": " << ex.what();
 			}
 	};
+    m_print->set_status(99, _utf8(L("Successfully executed post-processing script")));
 
 	//FIXME localize the messages
 	std::string error_message;
@@ -727,6 +838,61 @@ void BackgroundSlicingProcess::finalize_gcode()
 	m_print->set_status(100, GUI::format(_L("G-code file exported to %1%"), export_path));
 }
 
+// G-code is generated in m_temp_output_path.
+// Optionally run a post-processing script on a copy of m_temp_output_path.
+// Copy the final G-code to target location (possibly a SD card, if it is a removable media, then verify that the file was written without an error).
+void BackgroundSlicingProcess::export_gcode()
+{
+	// Perform the final post-processing of the export path by applying the print statistics over the file name.
+	std::string export_path = m_fff_print->print_statistics().finalize_output_path(m_export_path);
+	std::string output_path = m_temp_output_path;
+
+	//FIXME localize the messages
+	std::string error_message;
+	int copy_ret_val = CopyFileResult::SUCCESS;
+	try
+	{
+		copy_ret_val = copy_file(output_path, export_path, error_message, m_export_path_on_removable_media);
+	}
+	catch (...)
+	{
+		throw Slic3r::ExportError(_utf8(L("Unknown error when export G-code.")));
+	}
+	switch (copy_ret_val) {
+	case CopyFileResult::SUCCESS: break; // no error
+	case CopyFileResult::FAIL_COPY_FILE:
+		//throw Slic3r::ExportError((boost::format(_utf8(L("Copying of the temporary G-code to the output G-code failed. Maybe the SD card is write locked?\nError message: %1%"))) % error_message).str());
+		//break;
+	case CopyFileResult::FAIL_FILES_DIFFERENT:
+		//throw Slic3r::ExportError((boost::format(_utf8(L("Copying of the temporary G-code to the output G-code failed. There might be problem with target device, please try exporting again or using different device. The corrupted output G-code is at %1%.tmp."))) % export_path).str());
+		//break;
+	case CopyFileResult::FAIL_RENAMING:
+		//throw Slic3r::ExportError((boost::format(_utf8(L("Renaming of the G-code after copying to the selected destination folder has failed. Current path is %1%.tmp. Please try exporting again."))) % export_path).str());
+		//break;
+	case CopyFileResult::FAIL_CHECK_ORIGIN_NOT_OPENED:
+		//throw Slic3r::ExportError((boost::format(_utf8(L("Copying of the temporary G-code has finished but the original code at %1% couldn't be opened during copy check. The output G-code is at %2%.tmp."))) % output_path % export_path).str());
+		//break;
+	case CopyFileResult::FAIL_CHECK_TARGET_NOT_OPENED:
+		//throw Slic3r::ExportError((boost::format(_utf8(L("Copying of the temporary G-code has finished but the exported code couldn't be opened during copy check. The output G-code is at %1%.tmp."))) % export_path).str());
+		//break;
+	default:
+		BOOST_LOG_TRIVIAL(error) << "Fail code(" << (int)copy_ret_val << ") when copy "<<output_path<<" to " << export_path << ".";
+		throw Slic3r::ExportError((boost::format(_utf8(L("Failed to save gcode file.\nError message: %1%.\nSource file %2%."))) % error_message % output_path).str());
+		//throw Slic3r::ExportError(_utf8(L("Unknown error when export G-code.")));
+		break;
+	}
+
+	// BBS
+	auto evt = new wxCommandEvent(m_event_export_finished_id, GUI::wxGetApp().mainframe->m_plater->GetId());
+	wxString output_gcode_str = wxString::FromUTF8(export_path.c_str(), export_path.length());
+	evt->SetString(output_gcode_str);
+	wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt);
+
+	// BBS: to be checked. Whether use export_path or output_path.
+	gcode_add_line_number(export_path, m_fff_print->full_print_config());
+
+}
+
 // A print host upload job has been scheduled, enqueue it to the printhost job queue
 void BackgroundSlicingProcess::prepare_upload()
 {
@@ -735,45 +901,43 @@ void BackgroundSlicingProcess::prepare_upload()
 		/ boost::filesystem::unique_path("." SLIC3R_APP_KEY ".upload.%%%%-%%%%-%%%%-%%%%");
 
 	if (m_print == m_fff_print) {
-		m_print->set_status(95, _u8L("Running post-processing scripts"));
+		m_print->set_status(95, _utf8(L("Running post-processing scripts")));
 		std::string error_message;
 		if (copy_file(m_temp_output_path, source_path.string(), error_message) != SUCCESS)
-			throw Slic3r::RuntimeError("Copying of the temporary G-code to the output G-code failed");
+			throw Slic3r::RuntimeError(_utf8(L("Copying of the temporary G-code to the output G-code failed")));
         m_upload_job.upload_data.upload_path = m_fff_print->print_statistics().finalize_output_path(m_upload_job.upload_data.upload_path.string());
+		// Orca: skip post-processing scripts for BBL printers as we have run them already in finalize_gcode()
+		// todo: do we need to copy the file?
+		
         // Make a copy of the source path, as run_post_process_scripts() is allowed to change it when making a copy of the source file
-        // (not here, but when the final target is a file). 
-        std::string source_path_str = source_path.string();
-        std::string output_name_str = m_upload_job.upload_data.upload_path.string();
-		if (run_post_process_scripts(source_path_str, false, m_upload_job.printhost->get_name(), output_name_str, m_fff_print->full_print_config()))
-			m_upload_job.upload_data.upload_path = output_name_str;
+        // (not here, but when the final target is a file).
+        if (!m_fff_print->is_BBL_printer()) {
+            std::string source_path_str = source_path.string();
+            std::string output_name_str = m_upload_job.upload_data.upload_path.string();
+            if (run_post_process_scripts(source_path_str, false, m_upload_job.printhost->get_name(), output_name_str,
+                                         m_fff_print->full_print_config()))
+                m_upload_job.upload_data.upload_path = output_name_str;
+        }
     } else {
         m_upload_job.upload_data.upload_path = m_sla_print->print_statistics().finalize_output_path(m_upload_job.upload_data.upload_path.string());
-
-		auto [thumbnails_list, errors] = GCodeThumbnails::make_and_check_thumbnail_list(current_print()->full_print_config());
-
-		if (errors != enum_bitmask<ThumbnailError>()) {
-			std::string error_str = format("Invalid thumbnails value:");
-			error_str += GCodeThumbnails::get_error_string(errors);
-			throw Slic3r::ExportError(error_str);
-		}
-
-		Vec2ds 	sizes;
-		if (!thumbnails_list.empty()) {
-			sizes.reserve(thumbnails_list.size());
-			for (const auto& [format, size] : thumbnails_list)
-				sizes.emplace_back(size);
-		}
-		ThumbnailsList thumbnails = this->render_thumbnails(ThumbnailsParams{ sizes, true, true, true, true });
-        m_sla_print->export_print(source_path.string(),thumbnails, m_upload_job.upload_data.upload_path.filename().string());
+        
+        ThumbnailsList thumbnails = this->render_thumbnails(
+        	ThumbnailsParams{current_print()->full_print_config().option<ConfigOptionPoints>("thumbnails")->values, true, true, true, true});
+																												 // true, false, true, true); // renders also supports and pad
+        Zipper zipper{source_path.string()};
+        m_sla_archive.export_print(zipper, *m_sla_print, m_upload_job.upload_data.upload_path.string());
+        for (const ThumbnailData& data : thumbnails)
+	        if (data.is_valid())
+	            write_thumbnail(zipper, data);
+        zipper.finalize();
     }
 
-    m_print->set_status(100, GUI::format(_L("Scheduling upload to `%1%`. See Window -> Print Host Upload Queue"), m_upload_job.printhost->get_host()));
+    m_print->set_status(100, (boost::format(_utf8(L("Scheduling upload to `%1%`. See Window -> Print Host Upload Queue"))) % m_upload_job.printhost->get_host()).str());
 
 	m_upload_job.upload_data.source_path = std::move(source_path);
 
 	GUI::wxGetApp().printhost_job_queue().enqueue(std::move(m_upload_job));
 }
-
 // Executed by the background thread, to start a task on the UI thread.
 ThumbnailsList BackgroundSlicingProcess::render_thumbnails(const ThumbnailsParams &params)
 {

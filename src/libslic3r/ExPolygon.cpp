@@ -22,8 +22,6 @@
 #include <cassert>
 #include <list>
 
-#include <ankerl/unordered_dense.h>
-
 namespace Slic3r {
 
 void ExPolygon::scale(double factor)
@@ -92,6 +90,12 @@ bool ExPolygon::contains(const Line &line) const
 
 bool ExPolygon::contains(const Polyline &polyline) const
 {
+    BoundingBox bbox1 = get_extents(*this);
+    BoundingBox bbox2 = get_extents(polyline);
+    bbox2.inflated(1);
+    if (!bbox1.overlap(bbox2))
+        return false;
+
     return diff_pl(polyline, *this).empty();
 }
 
@@ -182,6 +186,36 @@ bool ExPolygon::overlaps(const ExPolygon &other) const
            other.contains(this->contour.points.front());
 }
 
+bool overlaps(const ExPolygons& expolys1, const ExPolygons& expolys2)
+{
+    for (const ExPolygon& expoly1 : expolys1) {
+        for (const ExPolygon& expoly2 : expolys2) {
+            if (expoly1.overlaps(expoly2))
+                return true;
+        }
+    }
+    return false;
+}
+
+Point projection_onto(const ExPolygons& polygons, const Point& from)
+{
+    Point projected_pt;
+    double min_dist = std::numeric_limits<double>::max();
+
+    for (const auto& poly : polygons) {
+        for (int i = 0; i < poly.num_contours(); i++) {
+            Point p = from.projection_onto(poly.contour_or_hole(i));
+            double dist = (from - p).cast<double>().squaredNorm();
+            if (dist < min_dist) {
+                projected_pt = p;
+                min_dist = dist;
+            }
+        }
+    }
+
+    return projected_pt;
+}
+
 void ExPolygon::simplify_p(double tolerance, Polygons* polygons) const
 {
     Polygons pp = this->simplify_p(tolerance);
@@ -196,14 +230,14 @@ Polygons ExPolygon::simplify_p(double tolerance) const
     {
         Polygon p = this->contour;
         p.points.push_back(p.points.front());
-        p.points = MultiPoint::douglas_peucker(p.points, tolerance);
+        p.points = MultiPoint::_douglas_peucker(p.points, tolerance);
         p.points.pop_back();
         pp.emplace_back(std::move(p));
     }
     // holes
     for (Polygon p : this->holes) {
         p.points.push_back(p.points.front());
-        p.points = MultiPoint::douglas_peucker(p.points, tolerance);
+        p.points = MultiPoint::_douglas_peucker(p.points, tolerance);
         p.points.pop_back();
         pp.emplace_back(std::move(p));
     }
@@ -409,7 +443,7 @@ bool has_duplicate_points(const ExPolygon &expoly)
     size_t cnt = expoly.contour.points.size();
     for (const Polygon &hole : expoly.holes)
         cnt += hole.points.size();
-    Points allpts;
+    std::vector<Point> allpts;
     allpts.reserve(cnt);
     allpts.insert(allpts.begin(), expoly.contour.points.begin(), expoly.contour.points.end());
     for (const Polygon &hole : expoly.holes)
@@ -430,36 +464,20 @@ bool has_duplicate_points(const ExPolygons &expolys)
 {
 #if 1
     // Check globally.
-#if 0
-    // Detect duplicates by sorting with quicksort. It is quite fast, but ankerl::unordered_dense is around 1/4 faster.
-    Points allpts;
-    allpts.reserve(count_points(expolys));
+    size_t cnt = 0;
+    for (const ExPolygon &expoly : expolys) {
+        cnt += expoly.contour.points.size();
+        for (const Polygon &hole : expoly.holes)
+            cnt += hole.points.size();
+    }
+    std::vector<Point> allpts;
+    allpts.reserve(cnt);
     for (const ExPolygon &expoly : expolys) {
         allpts.insert(allpts.begin(), expoly.contour.points.begin(), expoly.contour.points.end());
         for (const Polygon &hole : expoly.holes)
             allpts.insert(allpts.end(), hole.points.begin(), hole.points.end());
     }
     return has_duplicate_points(std::move(allpts));
-#else
-    // Detect duplicates by inserting into an ankerl::unordered_dense hash set, which is is around 1/4 faster than qsort.
-    struct PointHash {
-        uint64_t operator()(const Point &p) const noexcept {
-            uint64_t h;
-            static_assert(sizeof(h) == sizeof(p));
-            memcpy(&h, &p, sizeof(p));
-            return ankerl::unordered_dense::detail::wyhash::hash(h);
-        }
-    };
-    ankerl::unordered_dense::set<Point, PointHash> allpts;
-    allpts.reserve(count_points(expolys));
-    for (const ExPolygon &expoly : expolys)
-        for (size_t icontour = 0; icontour < expoly.num_contours(); ++ icontour)
-            for (const Point &pt : expoly.contour_or_hole(icontour).points)
-                if (! allpts.insert(pt).second)
-                    // Duplicate point was discovered.
-                    return true;
-    return false;
-#endif
 #else
     // Check per contour.
     for (const ExPolygon &expoly : expolys)

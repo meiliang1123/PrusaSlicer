@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2019 - 2022 Enrico Turri @enricoturri1966, Filip Sykala @Jony01, Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Camera_hpp_
 #define slic3r_Camera_hpp_
 
@@ -12,6 +8,11 @@
 namespace Slic3r {
 namespace GUI {
 
+#define REQUIRES_ZOOM_TO_CUR_PLATE      -1
+#define REQUIRES_ZOOM_TO_ALL_PLATE      -2
+#define REQUIRES_ZOOM_TO_PLATE_IDLE     -100
+
+
 struct Camera
 {
     static const double DefaultDistance;
@@ -21,6 +22,7 @@ struct Camera
     static double FrustrumMinNearZ;
     static double FrustrumZMargin;
     static double MaxFovDeg;
+    static double ZoomUnit;
 
     enum class EType : unsigned char
     {
@@ -31,6 +33,9 @@ struct Camera
     };
 
     bool requires_zoom_to_bed{ false };
+    //BBS
+    bool requires_zoom_to_volumes{ false };
+    int  requires_zoom_to_plate{ REQUIRES_ZOOM_TO_PLATE_IDLE };
 
 private:
     EType m_type{ EType::Perspective };
@@ -57,25 +62,30 @@ public:
     EType get_type() const { return m_type; }
     std::string get_type_as_string() const;
     void set_type(EType type);
-    // valid values for type: "0" -> ortho, "1" -> perspective
-    void set_type(const std::string& type) { set_type((type == "1") ? EType::Perspective : EType::Ortho); }
+    // valid values for type: "false" -> ortho, "true" -> perspective
+    void set_type(const std::string& type) { set_type((type == "true") ? EType::Perspective : EType::Ortho); }
     void select_next_type();
 
     void enable_update_config_on_type_change(bool enable) { m_update_config_on_type_change_enabled = enable; }
 
-    const Vec3d& get_target() const { return m_target; }
+    void translate(const Vec3d& displacement);
+    const Vec3d& get_target()  { 
+        update_target();
+        return m_target; }
     void set_target(const Vec3d& target);
 
-    double get_distance() const { return (get_position() - m_target).norm(); }
+    double get_distance()  { return (get_position() - get_target()).norm(); }
     double get_gui_scale() const { return m_gui_scale; }
+    float  get_zenit() const { return m_zenit; }
 
     double get_zoom() const { return m_zoom; }
     double get_inv_zoom() const { assert(m_zoom != 0.0); return 1.0 / m_zoom; }
-    void update_zoom(double delta_zoom) { set_zoom(m_zoom / (1.0 - std::max(std::min(delta_zoom, 4.0), -4.0) * 0.1)); }
+    void update_zoom(double delta_zoom) { set_zoom(m_zoom / (1.0 - std::max(std::min(delta_zoom, 4.0), -4.0) * ZoomUnit)); }
     void set_zoom(double zoom);
 
     const BoundingBoxf3& get_scene_box() const { return m_scene_box; }
     void set_scene_box(const BoundingBoxf3& box) { m_scene_box = box; }
+
 
     void select_view(const std::string& direction);
 
@@ -83,9 +93,13 @@ public:
     const Transform3d& get_view_matrix() const { return m_view_matrix; }
     const Transform3d& get_projection_matrix() const { return m_projection_matrix; }
 
+    //BBS
+    const Eigen::Quaterniond& get_view_rotation() const {return m_view_rotation; }
+
     Vec3d get_dir_right() const { return m_view_matrix.matrix().block(0, 0, 3, 3).row(0); }
     Vec3d get_dir_up() const { return m_view_matrix.matrix().block(0, 0, 3, 3).row(1); }
     Vec3d get_dir_forward() const { return -m_view_matrix.matrix().block(0, 0, 3, 3).row(2); }
+
 
     Vec3d get_position() const { return m_view_matrix.matrix().inverse().block(0, 3, 3, 1); }
 
@@ -107,6 +121,7 @@ public:
     // Calculates and applies the projection matrix tighting the frustrum z range around the given box.
     // If larger z span is needed, pass the desired values of near and far z (negative values are ignored)
     void apply_projection(const BoundingBoxf3& box, double near_z = -1.0, double far_z = -1.0);
+
     void apply_projection(double left, double right, double bottom, double top, double near_z, double far_z);
 
     void zoom_to_box(const BoundingBoxf3& box, double margin_factor = DefaultZoomToBoxMarginFactor);
@@ -119,6 +134,10 @@ public:
     // translate the camera in world space
     void translate_world(const Vec3d& displacement) { set_target(m_target + displacement); }
 
+    // BBS rotate the camera on a sphere having center == target
+    void rotate_on_sphere_with_target(double delta_azimut_rad, double delta_zenit_rad, bool apply_limits, Vec3d target);
+    void rotate_local_with_target(const Vec3d& rotation_rad, Vec3d target);
+
     // rotate the camera on a sphere having center == m_target and radius == m_distance
     // using the given variations of spherical coordinates
     // if apply_limits == true the camera stops rotating when its forward vector is parallel to the world Z axis
@@ -127,19 +146,24 @@ public:
     // rotate the camera around three axes parallel to the camera local axes and passing through m_target
     void rotate_local_around_target(const Vec3d& rotation_rad);
 
+    void set_rotation(const Transform3d& rotation);
+
     // returns true if the camera z axis (forward) is pointing in the negative direction of the world z axis
     bool is_looking_downward() const { return get_dir_forward().dot(Vec3d::UnitZ()) < 0.0; }
-
+    bool is_looking_front() const { return abs(get_dir_up().dot(Vec3d::UnitZ())-1) < 0.001; }
     // forces camera right vector to be parallel to XY plane
     void recover_from_free_camera() {
         if (std::abs(get_dir_right()(2)) > EPSILON)
             look_at(get_position(), m_target, Vec3d::UnitZ());
     }
 
+    //BBS store and load camera view
+    void load_camera_view(Camera& cam);
+
     void look_at(const Vec3d& position, const Vec3d& target, const Vec3d& up);
 
     double max_zoom() const { return 250.0; }
-    double min_zoom() const { return 0.7 * calc_zoom_to_bounding_box_factor(m_scene_box); }
+    double min_zoom() const { return 0.2 * calc_zoom_to_bounding_box_factor(m_scene_box); }
 
 private:
     // returns tight values for nearZ and farZ plane around the given bounding box
@@ -152,6 +176,7 @@ private:
     void set_default_orientation();
     Vec3d validate_target(const Vec3d& target) const;
     void update_zenit();
+    void update_target();
 };
 
 } // GUI

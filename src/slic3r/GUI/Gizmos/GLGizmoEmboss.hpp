@@ -30,16 +30,13 @@ namespace Slic3r{
     class AppConfig;
     class GLVolume;
     enum class ModelVolumeType : int;
-    namespace GUI::Emboss {
-        struct CreateVolumeParams;
-    }
 }
 
 namespace Slic3r::GUI {
 class GLGizmoEmboss : public GLGizmoBase
 {
 public:
-    explicit GLGizmoEmboss(GLCanvas3D& parent);
+    explicit GLGizmoEmboss(GLCanvas3D &parent, const std::string &icon_filename, unsigned int sprite_id);
 
     /// <summary>
     /// Create new embossed text volume by type on position of mouse
@@ -67,6 +64,7 @@ public:
     /// <returns>True on success start job otherwise False</returns>
     bool do_mirror(size_t axis);
 
+
     /// <summary>
     /// Call on change inside of object conatining projected volume
     /// </summary>
@@ -81,8 +79,6 @@ protected:
     void on_register_raycasters_for_picking() override;
     void on_unregister_raycasters_for_picking() override;
     void on_render_input_window(float x, float y, float bottom_limit) override;
-    bool on_is_selectable() const override { return false; }
-    bool on_is_activable() const override { return true; };
     void on_set_state() override;
     void data_changed(bool is_serializing) override; // selection changed
     void on_set_hover_id() override{ m_rotate_gizmo.set_hover_id(m_hover_id); }
@@ -91,6 +87,8 @@ protected:
     void on_start_dragging() override;
     void on_stop_dragging() override;
     void on_dragging(const UpdateData &data) override;    
+    void push_button_style(bool pressed);
+    void pop_button_style();
 
     /// <summary>
     /// Rotate by text on dragging rotate grabers
@@ -116,7 +114,7 @@ private:
     void reset_volume();
 
     // create volume from text - main functionality
-    bool process(bool make_snapshot = true, std::optional<Transform3d> volume_transformation = std::nullopt);
+    bool process(bool make_snapshot = true);
     void close();
     void draw_window();
     void draw_text_input();
@@ -141,17 +139,6 @@ private:
     bool draw_bold_button();
     void draw_advanced();
 
-    void draw_use_surface();
-    void draw_per_glyph();
-    void draw_align();
-    void draw_char_gap();
-    void draw_line_gap();
-    void draw_boldness();
-    void draw_skew();
-    void draw_rotation();
-
-    void draw_surface_distance();
-
     bool select_facename(const wxString& facename);
 
     template<typename T> bool rev_input_mm(const std::string &name, T &value, const T *default_value,
@@ -165,16 +152,14 @@ private:
     template<typename T> bool rev_input(const std::string &name, T &value, const T *default_value, 
         const std::string &undo_tooltip, T step, T step_fast, const char *format, ImGuiInputTextFlags flags = 0) const;
     bool rev_checkbox(const std::string &name, bool &value, const bool* default_value, const std::string  &undo_tooltip) const;
+    bool rev_slider(const std::string &name, std::optional<int>& value, const std::optional<int> *default_value,
+        const std::string &undo_tooltip, int v_min, int v_max, const std::string &format, const wxString &tooltip) const;
     bool rev_slider(const std::string &name, std::optional<float>& value, const std::optional<float> *default_value,
-        const std::string &undo_tooltip, const MinMax<float>& min_max, const std::string &format, const wxString &tooltip) const;
+        const std::string &undo_tooltip, float v_min, float v_max, const std::string &format, const wxString &tooltip) const;
     bool rev_slider(const std::string &name, float &value, const float *default_value, 
-        const std::string &undo_tooltip, const MinMax<float>& min_max, const std::string &format, const wxString &tooltip) const;
+        const std::string &undo_tooltip, float v_min, float v_max, const std::string &format, const wxString &tooltip) const;
     template<typename T, typename Draw> bool revertible(const std::string &name, T &value, const T *default_value,
         const std::string &undo_tooltip, float undo_offset, Draw draw) const;
-
-    bool m_should_set_minimal_windows_size = false;
-    void set_minimal_window_size(bool is_advance_edit_style);
-    ImVec2 get_minimal_window_size() const;
 
     // process mouse event
     bool on_mouse_for_rotation(const wxMouseEvent &mouse_event);
@@ -187,20 +172,11 @@ private:
     void create_notification_not_valid_font(const std::string& text);
     void remove_notification_not_valid_font();
 
-    // initialize data for create volume in job
-    Emboss::CreateVolumeParams create_input(ModelVolumeType volume_type);
-
     struct GuiCfg;
     std::unique_ptr<const GuiCfg> m_gui_cfg;
 
     // Is open tree with advanced options
     bool m_is_advanced_edit_style = false;
-
-    // when true window will appear near to text volume when open
-    // When false it opens on last position
-    bool m_allow_open_near_volume = false;
-    // setted only when wanted to use - not all the time
-    std::optional<ImVec2> m_set_window_offset;
 
     // Keep information about stored styles and loaded actual style to compare with
     Emboss::StyleManager m_style_manager;
@@ -248,7 +224,6 @@ private:
     // For text on scaled objects
     std::optional<float> m_scale_height;
     std::optional<float> m_scale_depth;
-    std::optional<float> m_scale_width;
     void calculate_scale();
 
     // drawing icons

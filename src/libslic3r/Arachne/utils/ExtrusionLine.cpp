@@ -5,7 +5,7 @@
 
 #include "ExtrusionLine.hpp"
 #include "linearAlg2D.hpp"
-#include "../../PerimeterGenerator.hpp"
+#include "../../VariableWidth.hpp"
 
 namespace Slic3r::Arachne
 {
@@ -29,13 +29,20 @@ int64_t ExtrusionLine::getLength() const
     return len;
 }
 
+coord_t ExtrusionLine::getMinimalWidth() const
+{
+    return std::min_element(junctions.cbegin(), junctions.cend(),
+                            [](const ExtrusionJunction& l, const ExtrusionJunction& r)
+                            {
+                                return l.w < r.w;
+                            })->w;
+}
+
 void ExtrusionLine::simplify(const int64_t smallest_line_segment_squared, const int64_t allowed_error_distance_squared, const int64_t maximum_extrusion_area_deviation)
 {
     const size_t min_path_size = is_closed ? 3 : 2;
     if (junctions.size() <= min_path_size)
         return;
-
-    // TODO: allow for the first point to be removed in case of simplifying closed Extrusionlines.
 
     /* ExtrusionLines are treated as (open) polylines, so in case an ExtrusionLine is actually a closed polygon, its
      * starting and ending points will be equal (or almost equal). Therefore, the simplification of the ExtrusionLine
@@ -45,12 +52,16 @@ void ExtrusionLine::simplify(const int64_t smallest_line_segment_squared, const 
     // Starting junction should always exist in the simplified path
     new_junctions.emplace_back(junctions.front());
 
-    /* Initially, previous_previous is always the same as previous because, for open ExtrusionLines the last junction
-     * cannot be taken into consideration when checking the points at index 1. For closed ExtrusionLines, the first and
-     * last junctions are anyway the same.
-     * */
-    ExtrusionJunction previous_previous = junctions.front();
     ExtrusionJunction previous = junctions.front();
+    /* For open ExtrusionLines the last junction cannot be taken into consideration when checking the points at index 1.
+     * For closed ExtrusionLines, the first and last junctions are the same, so use the prior to last juction.
+     * */
+    ExtrusionJunction previous_previous = this->is_closed ? junctions[junctions.size() - 2] : junctions.front();
+
+    /* TODO: When deleting, combining, or modifying junctions, it would
+     * probably be good to set the new junction's width to a weighted average
+     * of the junctions it is derived from.
+     */
 
     /* When removing a vertex, we check the height of the triangle of the area
      being removed from the original polygon by the simplification. However,
@@ -67,16 +78,26 @@ void ExtrusionLine::simplify(const int64_t smallest_line_segment_squared, const 
      From this area we compute the height of the representative triangle using
      the standard formula for a triangle area: A = .5*b*h
      */
-    const ExtrusionJunction& initial = junctions.at(1);
+    const ExtrusionJunction& initial = junctions[1];
     int64_t accumulated_area_removed = int64_t(previous.p.x()) * int64_t(initial.p.y()) - int64_t(previous.p.y()) * int64_t(initial.p.x()); // Twice the Shoelace formula for area of polygon per line segment.
 
-    for (size_t point_idx = 1; point_idx < junctions.size() - 1; point_idx++)
+    // For a closed polygon we process the last point, which is the same as the first point.
+    for (size_t point_idx = 1; point_idx < junctions.size() - (this->is_closed ? 0 : 1); point_idx++)
     {
-        const ExtrusionJunction& current = junctions[point_idx];
+        // For the last point of a closed polygon, use the first point of the new polygon in case we modified it.
+        const bool is_last = point_idx + 1 == junctions.size();
+        const ExtrusionJunction& current = is_last ? new_junctions[0] : junctions[point_idx];
+
+        // Don't simplify closed polygons below 3 junctions.
+        if (this->is_closed && new_junctions.size() + (junctions.size() - point_idx) <= 3) {
+            new_junctions.push_back(current);
+            continue;
+        }
 
         // Spill over in case of overflow, unless the [next] vertex will then be equal to [previous].
-        const bool spill_over = point_idx + 1 == junctions.size() && new_junctions.size() > 1;
-        ExtrusionJunction& next = spill_over ? new_junctions[0] : junctions[point_idx + 1];
+        const bool spill_over = this->is_closed && point_idx + 2 >= junctions.size() &&
+            point_idx + 2 - junctions.size() < new_junctions.size();
+        ExtrusionJunction& next = spill_over ? new_junctions[point_idx + 2 - junctions.size()] : junctions[point_idx + 1];
 
         const int64_t removed_area_next = int64_t(current.p.x()) * int64_t(next.p.y()) - int64_t(current.p.y()) * int64_t(next.p.x()); // Twice the Shoelace formula for area of polygon per line segment.
         const int64_t negative_area_closing = int64_t(next.p.x()) * int64_t(previous.p.y()) - int64_t(next.p.y()) * int64_t(previous.p.x()); // Area between the origin and the short-cutting segment
@@ -124,12 +145,18 @@ void ExtrusionLine::simplify(const int64_t smallest_line_segment_squared, const 
                 // We should instead move this point to a location where both edges are kept and then remove the previous point that we wanted to keep.
                 // By taking the intersection of these two lines, we get a point that preserves the direction (so it makes the corner a bit more pointy).
                 // We just need to be sure that the intersection point does not introduce an artifact itself.
+                //                o < prev_prev
+                //                |
+                //                o < prev
+                //                  \  < short segment
+                // intersection > +   o-------------------o < next
+                //                    ^ current
                 Point intersection_point;
                 bool has_intersection = Line(previous_previous.p, previous.p).intersection_infinite(Line(current.p, next.p), &intersection_point);
                 if (!has_intersection
                     || Line::distance_to_infinite_squared(intersection_point, previous.p, current.p) > double(allowed_error_distance_squared)
                     || (intersection_point - previous.p).cast<int64_t>().squaredNorm() > smallest_line_segment_squared  // The intersection point is way too far from the 'previous'
-                    || (intersection_point - next.p).cast<int64_t>().squaredNorm() > smallest_line_segment_squared)     // and 'next' points, so it shouldn't replace 'current'
+                    || (intersection_point - current.p).cast<int64_t>().squaredNorm() > smallest_line_segment_squared)  // and 'current' points, so it shouldn't replace 'current'
                 {
                     // We can't find a better spot for it, but the size of the line is more than 5 micron.
                     // So the only thing we can do here is leave it in...
@@ -165,15 +192,14 @@ void ExtrusionLine::simplify(const int64_t smallest_line_segment_squared, const 
         new_junctions.push_back(current);
     }
 
-    // Ending junction (vertex) should always exist in the simplified path
-    new_junctions.emplace_back(junctions.back());
-
-    /* In case this is a closed polygon (instead of a poly-line-segments), the invariant that the first and last points are the same should be enforced.
-     * Since one of them didn't move, and the other can't have been moved further than the constraints, if originally equal, they can simply be equated.
-     */
-    if ((junctions.front().p - junctions.back().p).cast<int64_t>().squaredNorm() == 0)
-    {
-        new_junctions.back().p = junctions.front().p;
+    if (this->is_closed) {
+        /* The first and last points should be the same for a closed polygon.
+         * We processed the last point above, so copy it into the first point.
+         */
+        new_junctions.front().p = new_junctions.back().p;
+    } else {
+        // Ending junction (vertex) should always exist in the simplified path
+        new_junctions.emplace_back(junctions.back());
     }
 
     junctions = new_junctions;
@@ -227,10 +253,9 @@ bool ExtrusionLine::is_contour() const
     return poly.is_clockwise();
 }
 
-double ExtrusionLine::area() const {
-    if (!this->is_closed)
-        return 0.;
-
+double ExtrusionLine::area() const
+{
+    assert(this->is_closed);
     double a = 0.;
     if (this->junctions.size() >= 3) {
         Vec2d p1 = this->junctions.back().p.cast<double>();
@@ -240,23 +265,7 @@ double ExtrusionLine::area() const {
             p1 = p2;
         }
     }
-
     return 0.5 * a;
-}
-
-Points to_points(const ExtrusionLine &extrusion_line) {
-    Points points;
-    points.reserve(extrusion_line.junctions.size());
-    for (const ExtrusionJunction &junction : extrusion_line.junctions)
-        points.emplace_back(junction.p);
-    return points;
-}
-
-BoundingBox get_extents(const ExtrusionLine &extrusion_line) {
-    BoundingBox bbox;
-    for (const ExtrusionJunction &junction : extrusion_line.junctions)
-        bbox.merge(junction.p);
-    return bbox;
 }
 
 } // namespace Slic3r::Arachne
@@ -266,13 +275,13 @@ void extrusion_paths_append(ExtrusionPaths &dst, const ClipperLib_Z::Paths &extr
 {
     for (const ClipperLib_Z::Path &extrusion_path : extrusion_paths) {
         ThickPolyline thick_polyline = Arachne::to_thick_polyline(extrusion_path);
-        Slic3r::append(dst, PerimeterGenerator::thick_polyline_to_multi_path(thick_polyline, role, flow, scaled<float>(0.05), float(SCALED_EPSILON)).paths);
+        Slic3r::append(dst, thick_polyline_to_multi_path(thick_polyline, role, flow, scaled<float>(0.05), float(SCALED_EPSILON)).paths);
     }
 }
 
 void extrusion_paths_append(ExtrusionPaths &dst, const Arachne::ExtrusionLine &extrusion, const ExtrusionRole role, const Flow &flow)
 {
     ThickPolyline thick_polyline = Arachne::to_thick_polyline(extrusion);
-    Slic3r::append(dst, PerimeterGenerator::thick_polyline_to_multi_path(thick_polyline, role, flow, scaled<float>(0.05), float(SCALED_EPSILON)).paths);
+    Slic3r::append(dst, thick_polyline_to_multi_path(thick_polyline, role, flow, scaled<float>(0.05), float(SCALED_EPSILON)).paths);
 }
 } // namespace Slic3r

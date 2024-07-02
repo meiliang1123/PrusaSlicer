@@ -7,7 +7,7 @@
 
 #include "libslic3r/Geometry.hpp"
 #include "GUI_Geometry.hpp"
-#include "CoordAxes.hpp"
+#include "GLModel.hpp"
 
 #include <set>
 #include <optional>
@@ -24,7 +24,9 @@ class GLArrow;
 class GLCurvedArrow;
 class DynamicPrintConfig;
 class GLShaderProgram;
+#if ENABLE_ENHANCED_PRINT_VOLUME_FIT
 class BuildVolume;
+#endif // ENABLE_ENHANCED_PRINT_VOLUME_FIT
 
 using GLVolumePtrs = std::vector<GLVolume*>;
 using ModelObjectPtrs = std::vector<ModelObject*>;
@@ -62,15 +64,36 @@ public:
 private:
     struct VolumeCache
     {
+    private:
+        struct TransformCache
+        {
+            Vec3d position;
+            Transform3d rotation_matrix;
+            Transform3d scale_matrix;
+            Transform3d mirror_matrix;
+
+            Geometry::Transformation transform;
+
+            TransformCache();
+            explicit TransformCache(const Geometry::Transformation& transform);
+        };
+
+        TransformCache m_volume;
+        TransformCache m_instance;
+
+    public:
         VolumeCache() = default;
         VolumeCache(const Geometry::Transformation& volume_transform, const Geometry::Transformation& instance_transform);
 
-        const Geometry::Transformation& get_volume_transform() const { return m_volume; }
-        const Geometry::Transformation& get_instance_transform() const { return m_instance; }
+        const Vec3d& get_volume_position() const { return m_volume.position; }
+        const Transform3d& get_volume_scale_matrix() const { return m_volume.scale_matrix; }
+        const Geometry::Transformation& get_volume_transform() const { return m_volume.transform; }
 
-    private:
-        Geometry::Transformation m_volume;
-        Geometry::Transformation m_instance;
+        const Vec3d& get_instance_position() const { return m_instance.position; }
+        const Transform3d& get_instance_rotation_matrix() const { return m_instance.rotation_matrix; }
+        const Transform3d& get_instance_scale_matrix() const { return m_instance.scale_matrix; }
+        const Transform3d& get_instance_mirror_matrix() const { return m_instance.mirror_matrix; }
+        const Geometry::Transformation &get_instance_transform() const { return m_instance.transform; }
     };
 
 public:
@@ -158,7 +181,6 @@ private:
     GLModel m_vbo_sphere;
 #endif // ENABLE_RENDER_SELECTION_CENTER
 
-    CoordAxes m_axes;
     GLModel m_arrow;
     GLModel m_curved_arrow;
     GLModel m_box;
@@ -170,6 +192,10 @@ private:
     Planes m_planes;
 
     float m_scale_factor;
+
+    // BBS
+    EMode m_volume_selection_mode{ Instance };
+    bool m_volume_selection_locked { false };
 
 public:
     Selection();
@@ -186,6 +212,7 @@ public:
     EMode get_mode() const { return m_mode; }
     void set_mode(EMode mode) { m_mode = mode; }
 
+    int query_real_volume_idx_from_other_view(unsigned int object_idx, unsigned int instance_idx, unsigned int model_volume_idx);
     void add(unsigned int volume_idx, bool as_single_selection = true, bool check_for_already_contained = false);
     void remove(unsigned int volume_idx);
 
@@ -201,6 +228,15 @@ public:
     void add_volumes(EMode mode, const std::vector<unsigned int>& volume_idxs, bool as_single_selection = true);
     void remove_volumes(EMode mode, const std::vector<unsigned int>& volume_idxs);
 
+    //BBS
+    void add_curr_plate();
+    void add_object_from_idx(std::vector<int>& object_idxs);
+    void remove_curr_plate();
+    void clone(int numbers = 1);
+    void center();
+    void center_plate(const int plate_idx);
+    void set_printable(bool printable);
+
     void add_all();
     void remove_all();
 
@@ -208,7 +244,7 @@ public:
     void set_deserialized(EMode mode, const std::vector<std::pair<size_t, size_t>> &volumes_and_instances);
 
     // Update the selection based on the new instance IDs.
-    void instances_changed(const std::vector<size_t> &instance_ids_selected);
+	void instances_changed(const std::vector<size_t> &instance_ids_selected);
     // Update the selection based on the map from old indices to new indices after m_volumes changed.
     // If the current selection is by instance, this call may select newly added volumes, if they belong to already selected instances.
     void volumes_changed(const std::vector<size_t> &map_volume_old_to_new);
@@ -247,14 +283,7 @@ public:
     // returns true if the selection contains all and only the given indices
     bool matches(const std::vector<unsigned int>& volume_idxs) const;
 
-    enum class EUniformScaleRequiredReason : unsigned char
-    {
-        NotRequired,
-        InstanceNotAxisAligned_World,
-        VolumeNotAxisAligned_World,
-        VolumeNotAxisAligned_Instance,
-        MultipleSelection,
-    };
+    bool requires_uniform_scale() const;
 
     // Returns the the object id if the selection is from a single object, otherwise is -1
     int get_object_idx() const;
@@ -296,44 +325,61 @@ public:
     // and the transform to place and orient it in world coordinates
     std::pair<BoundingBoxf3, Transform3d> get_bounding_box_in_reference_system(ECoordinatesType type) const;
 
-    // Returns the screen space bounding box
-    BoundingBoxf get_screen_space_bounding_box();
-
     // Returns the bounding sphere: first = center, second = radius
     const std::pair<Vec3d, double> get_bounding_sphere() const;
 
     void setup_cache();
 
     void translate(const Vec3d& displacement, TransformationType transformation_type);
+    void move_to_center(const Vec3d& displacement, bool local = false);
     void rotate(const Vec3d& rotation, TransformationType transformation_type);
     void flattening_rotate(const Vec3d& normal);
+    [[deprecated("Only used by GizmoObjectManipulation")]]
+    void scale_legacy(const Vec3d& scale, TransformationType transformation_type);
     void scale(const Vec3d& scale, TransformationType transformation_type);
+#if ENABLE_ENHANCED_PRINT_VOLUME_FIT
     void scale_to_fit_print_volume(const BuildVolume& volume);
+#else
+    void scale_to_fit_print_volume(const DynamicPrintConfig& config);
+#endif // ENABLE_ENHANCED_PRINT_VOLUME_FIT
     void scale_and_translate(const Vec3d& scale, const Vec3d& world_translation, TransformationType transformation_type);
     void mirror(Axis axis, TransformationType transformation_type);
-    void reset_skew();
-    void translate(unsigned int object_idx, unsigned int instance_idx, const Vec3d& displacement);
 
-    // returns:
-    // -1 if the user refused to proceed with baking when asked
-    // 0 if the baking was performed
-    // 1 if no baking was needed
-    int bake_transform_if_needed() const;
+    void translate(unsigned int object_idx, const Vec3d& displacement);
+    void translate(unsigned int object_idx, unsigned int instance_idx, const Vec3d& displacement);
+    //BBS: add partplate related logic
+    void notify_instance_update(int object_idx, int instance_idx);
+    // BBS
+    void set_volume_selection_mode(EMode mode) { if (!m_volume_selection_locked) m_volume_selection_mode = mode; }
+    void lock_volume_selection_mode() { m_volume_selection_locked = true; }
+    void unlock_volume_selection_mode() { m_volume_selection_locked = false; }
 
     void erase();
 
     void render(float scale_factor = 1.0);
-    void render_sidebar_hints(const std::string& sidebar_field);
+    //BBS: GUI refactor: add uniform scale from gizmo
+    void render_sidebar_hints(const std::string& sidebar_field, bool uniform_scale);
 #if ENABLE_RENDER_SELECTION_CENTER
     void render_center(bool gizmo_is_dragging);
 #endif // ENABLE_RENDER_SELECTION_CENTER
 
     bool requires_local_axes() const;
 
+    void render_bounding_box(const BoundingBoxf3& box, const ColorRGB& color, float scale) {
+        m_scale_factor = scale;
+        render_bounding_box(box, Transform3d::Identity(), color);
+    }
+
+    //BBS
+    void cut_to_clipboard();
     void copy_to_clipboard();
     void paste_from_clipboard();
+    //BBS get selected object instance lists
+    std::set<std::pair<int, int>> get_selected_object_instances();
 
     const Clipboard& get_clipboard() const { return m_clipboard; }
+
+    void fill_color(int  extruder_id);
 
     // returns the list of idxs of the volumes contained into the object with the given idx
     std::vector<unsigned int> get_volume_idxs_from_object(unsigned int object_idx) const;
@@ -345,12 +391,6 @@ public:
     std::vector<unsigned int> get_missing_volume_idxs_from(const std::vector<unsigned int>& volume_idxs) const;
     // returns the list of idxs of the volumes contained in the given list but not in the selection
     std::vector<unsigned int> get_unselected_volume_idxs_from(const std::vector<unsigned int>& volume_idxs) const;
-    // returns the list of idxs of the objects which are in the selection
-    std::set<unsigned int> get_object_idxs() const;
-
-#if ENABLE_MATRICES_DEBUG
-    void render_debug_window() const;
-#endif // ENABLE_MATRICES_DEBUG
 
 private:
     void update_valid();
@@ -371,11 +411,10 @@ private:
     }
     void render_synchronized_volumes();
     void render_bounding_box(const BoundingBoxf3& box, const Transform3d& trafo, const ColorRGB& color);
-    void render_selected_volumes() const;
-    void render_bounding_box(const BoundingBoxf3& box, float* color) const;
     void render_sidebar_position_hints(const std::string& sidebar_field, GLShaderProgram& shader, const Transform3d& matrix);
     void render_sidebar_rotation_hints(const std::string& sidebar_field, GLShaderProgram& shader, const Transform3d& matrix);
-    void render_sidebar_scale_hints(const std::string& sidebar_field, GLShaderProgram& shader, const Transform3d& matrix);
+    //BBS: GUI refactor: add uniform_scale from gizmo
+    void render_sidebar_scale_hints(const std::string& sidebar_field, bool gizmo_uniform_scale, GLShaderProgram& shader, const Transform3d& matrix);
     void render_sidebar_layers_hints(const std::string& sidebar_field, GLShaderProgram& shader);
 
 public:

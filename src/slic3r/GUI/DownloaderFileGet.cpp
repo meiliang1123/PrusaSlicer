@@ -15,6 +15,7 @@
 #include "format.hpp"
 #include "GUI.hpp"
 #include "I18N.hpp"
+#include "libslic3r/Utils.hpp"
 
 namespace Slic3r {
 namespace GUI {
@@ -124,7 +125,15 @@ FileGet::priv::priv(int ID, std::string&& url, const std::string& filename, wxEv
 	, m_dest_folder(dest_folder)
 {
 }
-
+std::string extract_remote_filename(const std::string& str) {
+    std::regex r("filename=\"([^\"]*)\"");
+    std::smatch match;
+    if (std::regex_search(str.begin(), str.end(), match, r)) {
+        return match.str(1);
+    } else {
+        return "";
+    }
+}
 void FileGet::priv::get_perform()
 {
 	assert(m_evt_handler);
@@ -135,10 +144,11 @@ void FileGet::priv::get_perform()
 	m_stopped = false;
 
 	// open dest file
+	std::string extension;
 	if (m_written == 0)
 	{
 		boost::filesystem::path dest_path = m_dest_folder / m_filename;
-		std::string extension = dest_path.extension().string();
+		extension = dest_path.extension().string();
 		std::string just_filename = m_filename.substr(0, m_filename.size() - extension.size());
 		std::string final_filename = just_filename;
         // Find unsed filename 
@@ -164,18 +174,20 @@ void FileGet::priv::get_perform()
 			m_evt_handler->QueueEvent(evt);
 			return;
 		}
-		
-		m_filename = final_filename + extension;
 
-		m_tmp_path = m_dest_folder / (m_filename + "." + std::to_string(get_current_pid()) + ".download");
+        m_filename = sanitize_filename(final_filename + extension);
+
+        m_tmp_path = m_dest_folder / (m_filename + "." + std::to_string(get_current_pid()) + ".download");
 
 		wxCommandEvent* evt = new wxCommandEvent(EVT_DWNLDR_FILE_NAME_CHANGE);
-		evt->SetString(from_u8(m_filename));
+		evt->SetString(boost::nowide::widen(m_filename));
 		evt->SetInt(m_id);
 		m_evt_handler->QueueEvent(evt);
 	}
 	
-	boost::filesystem::path dest_path = m_dest_folder / m_filename;
+	boost::filesystem::path dest_path;
+	if(!extension.empty())
+		dest_path = m_dest_folder / m_filename;
 
 	wxString temp_path_wstring(m_tmp_path.wstring());
 	
@@ -201,13 +213,26 @@ void FileGet::priv::get_perform()
 		return;
 	}
 
-	std:: string range_string = std::to_string(m_written) + "-";
+		std:: string range_string = std::to_string(m_written) + "-";
 
-	size_t written_previously = m_written;
-	size_t written_this_session = 0;
-	Http::get(m_url)
-		.size_limit(DOWNLOAD_SIZE_LIMIT) //more?
+		size_t written_previously = m_written;
+		size_t written_this_session = 0;
+		Http::get(m_url)
+			.size_limit(DOWNLOAD_SIZE_LIMIT) //more?
 		.set_range(range_string)
+		.on_header_callback([&](std::string header) {
+			if(dest_path.empty()) {
+				std::string filename = extract_remote_filename(header);
+				if (!filename.empty()) {
+					m_filename = filename;
+					dest_path = m_dest_folder / m_filename;
+					wxCommandEvent* evt = new wxCommandEvent(EVT_DWNLDR_FILE_NAME_CHANGE);
+					evt->SetString(boost::nowide::widen(m_filename));
+					evt->SetInt(m_id);
+					m_evt_handler->QueueEvent(evt);
+				}
+			}
+		})
 		.on_progress([&](Http::Progress progress, bool& cancel) {
 			// to prevent multiple calls into following ifs (m_cancel / m_pause)
 			if (m_stopped){
@@ -244,7 +269,7 @@ void FileGet::priv::get_perform()
 			}
 
 			if (progress.dlnow != 0) {
-				if (progress.dlnow - written_this_session > DOWNLOAD_MAX_CHUNK_SIZE || progress.dlnow == progress.dltotal) {
+			if (progress.dlnow - written_this_session > DOWNLOAD_MAX_CHUNK_SIZE || progress.dlnow == progress.dltotal) {
 					try
 					{
 						std::string part_for_write = progress.buffer.substr(written_this_session, progress.dlnow);
@@ -264,7 +289,7 @@ void FileGet::priv::get_perform()
 					m_written = written_previously + written_this_session;
 				}
 				wxCommandEvent* evt = new wxCommandEvent(EVT_DWNLDR_FILE_PROGRESS);
-				int percent_total = (written_previously + progress.dlnow) * 100 / m_absolute_size;
+				int             percent_total = m_absolute_size == 0 ? 0 : (written_previously + progress.dlnow) * 100 / m_absolute_size;
 				evt->SetString(std::to_string(percent_total));
 				evt->SetInt(m_id);
 				m_evt_handler->QueueEvent(evt);
@@ -292,14 +317,18 @@ void FileGet::priv::get_perform()
 			//}
 			try
 			{
-				/*
+				// Orca: thingiverse need this
 				if (m_written < body.size())
 				{
 					// this code should never be entered. As there should be on_progress call after last bit downloaded.
 					std::string part_for_write = body.substr(m_written);
 					fwrite(part_for_write.c_str(), 1, part_for_write.size(), file);
-				}
-				*/
+
+                    wxCommandEvent* evt = new wxCommandEvent(EVT_DWNLDR_FILE_PROGRESS);
+                    evt->SetString(std::to_string(100));
+                    evt->SetInt(m_id);
+                    m_evt_handler->QueueEvent(evt);
+                }
 				fclose(file);
 				boost::filesystem::rename(m_tmp_path, dest_path);
 			}

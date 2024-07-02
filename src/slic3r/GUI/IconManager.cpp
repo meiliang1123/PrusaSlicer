@@ -1,11 +1,9 @@
 #include "IconManager.hpp"
-#include <boost/algorithm/string/predicate.hpp>
 #include <cmath>
 #include <numeric>
 #include <boost/log/trivial.hpp>
+#include <boost/filesystem.hpp>
 #include <boost/nowide/cstdio.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <boost/algorithm/string.hpp>
 #include "nanosvg/nanosvg.h"
 #include "nanosvg/nanosvgrast.h"
 #include "libslic3r/Utils.hpp" // ScopeGuard   
@@ -367,10 +365,21 @@ void draw(const IconManager::Icon &icon, const ImVec2 &size, const ImVec4 &tint_
         ImGui::Text("?");
         return;
     }
-
     ImTextureID id = (void *)static_cast<intptr_t>(icon.tex_id);
     const ImVec2 &s  = (size.x < 1 || size.y < 1) ? icon.size : size;
+
+    // Orca: Align icon center vertically
+    ImGuiWindow  *window      = ImGui::GetCurrentWindow();
+    ImGuiContext &g           = *GImGui;
+    float         cursor_y    = window->DC.CursorPos.y;
+    float         line_height = ImGui::GetTextLineHeight() + g.Style.FramePadding.y * 2;
+    int           offset_y    = (line_height - s.y) / 2; // Make sure its int otherwise it will be pixelated
+    window->DC.CursorPos.y += offset_y;
+
     ImGui::Image(id, s, icon.tl, icon.br, tint_col, border_col);
+
+    // Reset offset
+    window->DC.CursorPosPrevLine.y = cursor_y;
 }
 
 bool clickable(const IconManager::Icon &icon, const IconManager::Icon &icon_hover)

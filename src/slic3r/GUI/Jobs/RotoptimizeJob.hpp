@@ -11,7 +11,9 @@
 #include "libslic3r/PrintConfig.hpp"
 #include "slic3r/GUI/I18N.hpp"
 
-namespace Slic3r { namespace GUI {
+namespace Slic3r {
+
+namespace GUI {
 
 class Plater;
 
@@ -62,9 +64,15 @@ public:
 
     static constexpr size_t get_methods_count() { return std::size(Methods); }
 
-    static std::string get_method_name(size_t i);
+    static std::string get_method_name(size_t i)
+    {
+        return _utf8(Methods[i].name);
+    }
 
-    static std::string get_method_description(size_t i);
+    static std::string get_method_description(size_t i)
+    {
+        return _utf8(Methods[i].descr);
+    }
 };
 
 }} // namespace Slic3r::GUI

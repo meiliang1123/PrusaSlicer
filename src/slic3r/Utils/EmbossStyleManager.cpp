@@ -12,7 +12,7 @@
 #include "WxFontUtils.hpp"
 #include "slic3r/GUI/3DScene.hpp" // ::glsafe
 #include "slic3r/GUI/Jobs/CreateFontStyleImagesJob.hpp"
-#include "slic3r/GUI/ImGuiPureWrap.hpp" // check of font ranges
+#include "slic3r/GUI/ImGuiWrapper.hpp" // check of font ranges
 
 #include <boost/assign.hpp>
 #include <boost/bimap.hpp>
@@ -337,8 +337,8 @@ void StyleManager::init_trunc_names(float max_width) {
     for (auto &s : m_styles)
         if (s.truncated_name.empty()) {
             std::string name = s.name;
-            ImGuiPureWrap::escape_double_hash(name);
-            s.truncated_name = ImGuiPureWrap::trunc(name, max_width);
+            ImGuiWrapper::escape_double_hash(name);
+            s.truncated_name = ImGuiWrapper::trunc(name, max_width);
         }
 }
 
@@ -349,9 +349,9 @@ void StyleManager::init_trunc_names(float max_width) {
 // for get DPI
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/MainFrame.hpp"
-#include "slic3r/GUI/GUI_ObjectManipulation.hpp"
+#include "slic3r/GUI/Gizmos/GizmoObjectManipulation.hpp"
 
-void StyleManager::init_style_images(const Vec2i &max_size,
+void StyleManager::init_style_images(const Vec2i32 &max_size,
                                     const std::string &text)
 {
     // check already initialized
@@ -406,7 +406,7 @@ void StyleManager::init_style_images(const Vec2i &max_size,
     // dot per inch for monitor
     int dpi = get_dpi_for_window(mf);
     // pixel per milimeter
-    double ppm = dpi / ObjectManipulation::in_to_mm;
+    double ppm = dpi / GizmoObjectManipulation::in_to_mm;
 
     auto &worker = wxGetApp().plater()->get_ui_job_worker();
     StyleImagesData data{std::move(styles), max_size, text, m_temp_style_images, ppm};

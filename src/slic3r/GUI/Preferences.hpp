@@ -1,120 +1,146 @@
-///|/ Copyright (c) Prusa Research 2018 - 2023 Oleksandra Iushchenko @YuSanka, David Kocík @kocikdav, Vojtěch Bubník @bubnikv, Enrico Turri @enricoturri1966
-///|/ Copyright (c) 2021 Jurriaan Pruis
-///|/
-///|/ ported from lib/Slic3r/GUI/Preferences.pm:
-///|/ Copyright (c) Prusa Research 2016 - 2018 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2013 - 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Preferences_hpp_
 #define slic3r_Preferences_hpp_
 
 #include "GUI.hpp"
 #include "GUI_Utils.hpp"
-#include "wxExtensions.hpp"
 
+#include <wx/simplebook.h>
 #include <wx/dialog.h>
 #include <wx/timer.h>
 #include <vector>
+#include <list>
 #include <map>
+#include "Widgets/ComboBox.hpp"
+#include "Widgets/CheckBox.hpp"
+#include "Widgets/TextInput.hpp"
 
-class wxColourPickerCtrl;
-class wxBookCtrlBase;
-class wxSlider;
-class wxRadioButton;
+namespace Slic3r { namespace GUI {
 
-namespace Slic3r {
 
-	enum  NotifyReleaseMode {
-		NotifyReleaseAll,
-		NotifyReleaseOnly,
-		NotifyReleaseNone
-	};
+#define DESIGN_SELECTOR_NOMORE_COLOR wxColour(248, 248, 248)
+#define DESIGN_GRAY900_COLOR wxColour(38, 46, 48)
+#define DESIGN_GRAY800_COLOR wxColour(50, 58, 61)
+#define DESIGN_GRAY600_COLOR wxColour(144, 144, 144)
+#define DESIGN_GRAY400_COLOR wxColour(166, 169, 170)
 
-namespace GUI {
+class Selector
+{
+public:
+    int       m_index;
+    wxWindow *m_tab_button;
+    wxWindow *m_tab_text;
+};
+WX_DECLARE_HASH_MAP(int, Selector *, wxIntegerHash, wxIntegerEqual, SelectorHash);
 
-class ConfigOptionsGroup;
-class OG_CustomCtrl;
+class RadioBox;
+class RadioSelector
+{
+public:
+    wxString  m_param_name;
+    int       m_groupid;
+    RadioBox *m_radiobox;
+    bool      m_selected = false;
+};
 
-namespace DownloaderUtils {
-	class Worker;
-}
+WX_DECLARE_LIST(RadioSelector, RadioSelectorList);
+class CheckBox;
+class TextInput;
+
+
+
+#define DESIGN_RESOUTION_PREFERENCES wxSize(FromDIP(540), -1)
+#define DESIGN_TITLE_SIZE wxSize(FromDIP(100), -1)
+#define DESIGN_COMBOBOX_SIZE wxSize(FromDIP(140), -1)
+#define DESIGN_LARGE_COMBOBOX_SIZE wxSize(FromDIP(160), -1)
+#define DESIGN_INPUT_SIZE wxSize(FromDIP(100), -1)
+
 
 class PreferencesDialog : public DPIDialog
 {
-	std::map<std::string, std::string>	m_values;
-	std::shared_ptr<ConfigOptionsGroup>	m_optgroup_general;
-	std::shared_ptr<ConfigOptionsGroup>	m_optgroup_camera;
-	std::shared_ptr<ConfigOptionsGroup>	m_optgroup_gui;
-	std::shared_ptr<ConfigOptionsGroup>	m_optgroup_other;
-#ifdef _WIN32
-	std::shared_ptr<ConfigOptionsGroup>	m_optgroup_dark_mode;
-#endif //_WIN32
-#if ENABLE_ENVIRONMENT_MAP
-	std::shared_ptr<ConfigOptionsGroup>	m_optgroup_render;
-#endif // ENABLE_ENVIRONMENT_MAP
-	wxSizer*                            m_icon_size_sizer {nullptr};
-	wxSlider*							m_icon_size_slider {nullptr};
-	wxRadioButton*						m_rb_old_settings_layout_mode {nullptr};
-	wxRadioButton*						m_rb_dlg_settings_layout_mode {nullptr};
-
-	wxColourPickerCtrl*					m_sys_colour {nullptr};
-	wxColourPickerCtrl*					m_mod_colour {nullptr};
-
-	std::vector<wxColour>				m_mode_palette;
-	wxColourPickerCtrl*					m_mode_simple    { nullptr };
-	wxColourPickerCtrl*					m_mode_advanced  { nullptr };
-	wxColourPickerCtrl*					m_mode_expert    { nullptr };
-
-	DownloaderUtils::Worker*			downloader { nullptr };
-
-	wxBookCtrlBase*						tabs {nullptr};
-
-    bool                                isOSX {false};
-	bool								m_settings_layout_changed {false};
-	bool								m_seq_top_layer_only_changed{ false };
-	bool								m_recreate_GUI{false};
-
-	int									m_custom_toolbar_size{-1};
-	bool								m_use_custom_toolbar_size{false};
-
-public:
-	explicit PreferencesDialog(wxWindow* paren);
-	~PreferencesDialog() = default;
-
-	bool settings_layout_changed() const { return m_settings_layout_changed; }
-	bool seq_top_layer_only_changed() const { return m_seq_top_layer_only_changed; }
-	bool recreate_GUI() const { return m_recreate_GUI; }
-	void	build();
-	void	update_ctrls_alignment();
-	void	accept(wxEvent&);
-	void    revert(wxEvent&);
-	void	show(const std::string& highlight_option = std::string(), const std::string& tab_name = std::string());
+private:
+    AppConfig *app_config;
 
 protected:
-	void msw_rescale();
-	void on_dpi_changed(const wxRect& suggested_rect) override { msw_rescale(); }
-	void on_sys_color_changed() override;
-    void layout();
-	void clear_cache();
-	void refresh_og(std::shared_ptr<ConfigOptionsGroup> og);
-	void refresh_og(ConfigOptionsGroup* og);
-    void create_icon_size_slider();
-    void create_settings_mode_widget();
-    void create_settings_text_color_widget();
-    void create_settings_mode_color_widget();
-    void create_settings_font_widget();
-    void create_downloader_path_sizer();
-	void init_highlighter(const t_config_option_key& opt_key);
-	std::vector<ConfigOptionsGroup*> optgroups();
+    wxBoxSizer *  m_sizer_body;
+    wxScrolledWindow* m_scrolledWindow;
 
-	HighlighterForWx						m_highlighter;
-	std::map<std::string, BlinkingBitmap*>	m_blinkers;
+    // bool								m_settings_layout_changed {false};
+    bool m_seq_top_layer_only_changed{false};
+    bool m_recreate_GUI{false};
+
+public:
+    bool seq_top_layer_only_changed() const { return m_seq_top_layer_only_changed; }
+    bool recreate_GUI() const { return m_recreate_GUI; }
+    void on_dpi_changed(const wxRect &suggested_rect) override;
+
+public:
+    PreferencesDialog(wxWindow *      parent,
+                      wxWindowID      id    = wxID_ANY,
+                      const wxString &title = wxT(""),
+                      const wxPoint & pos   = wxDefaultPosition,
+                      const wxSize &  size  = wxDefaultSize,
+                      long            style = wxSYSTEM_MENU | wxCAPTION | wxCLOSE_BOX);
+
+    ~PreferencesDialog();
+
+    wxString m_backup_interval_time;
+
+    void      create();
+    wxWindow *create_tab_button(int id, wxString text);
+
+    // debug mode
+    ::CheckBox * m_developer_mode_ckeckbox   = {nullptr};
+    ::CheckBox * m_internal_developer_mode_ckeckbox = {nullptr};
+    ::CheckBox * m_dark_mode_ckeckbox        = {nullptr};
+    ::TextInput *m_backup_interval_textinput = {nullptr};
+
+    wxString m_developer_mode_def;
+    wxString m_internal_developer_mode_def;
+    wxString m_backup_interval_def;
+    wxString m_iot_environment_def;
+
+    SelectorHash      m_hash_selector;
+    RadioSelectorList m_radio_group;
+    // ComboBoxSelectorList    m_comxbo_group;
+
+    wxBoxSizer *create_item_title(wxString title, wxWindow *parent, wxString tooltip);
+    wxBoxSizer *create_item_combobox(wxString title, wxWindow *parent, wxString tooltip, std::string param, std::vector<wxString> vlist);
+    wxBoxSizer *create_item_region_combobox(wxString title, wxWindow *parent, wxString tooltip, std::vector<wxString> vlist);
+    wxBoxSizer *create_item_language_combobox(wxString title, wxWindow *parent, wxString tooltip, int padding_left, std::string param, std::vector<const wxLanguageInfo *> vlist);
+    wxBoxSizer *create_item_loglevel_combobox(wxString title, wxWindow *parent, wxString tooltip, std::vector<wxString> vlist);
+    wxBoxSizer *create_item_checkbox(wxString title, wxWindow *parent, wxString tooltip, int padding_left, std::string param);
+    wxBoxSizer *create_item_darkmode_checkbox(wxString title, wxWindow *parent, wxString tooltip, int padding_left, std::string param);
+    void set_dark_mode();
+    wxBoxSizer *create_item_button(wxString title, wxString title2, wxWindow *parent, wxString tooltip, wxString tooltip2, std::function<void()> onclick, bool button_on_left = false);
+    wxWindow* create_item_downloads(wxWindow* parent, int padding_left, std::string param);
+    wxBoxSizer *create_item_input(wxString title, wxString title2, wxWindow *parent, wxString tooltip, std::string param, std::function<void(wxString)> onchange = {});
+    wxBoxSizer *create_item_backup_input(wxString title, wxWindow *parent, wxString tooltip, std::string param);
+    wxBoxSizer *create_item_multiple_combobox(
+        wxString title, wxWindow *parent, wxString tooltip, int padding_left, std::string parama, std::vector<wxString> vlista, std::vector<wxString> vlistb);
+    wxBoxSizer *create_item_switch(wxString title, wxWindow *parent, wxString tooltip, std::string param);
+    wxWindow *  create_item_radiobox(wxString title, wxWindow *parent, wxString tooltip, int padding_left, int groupid, std::string param);
+
+    wxWindow* create_general_page();
+    void create_gui_page();
+    void create_sync_page();
+    void create_shortcuts_page();
+    wxWindow* create_debug_page();
+
+    void     on_select_radio(std::string param);
+    wxString get_select_radio(int groupid);
+    // BBS
+    void create_select_domain_widget();
+
+    void Split(const std::string &src, const std::string &separator, std::vector<wxString> &dest);
+    int m_current_language_selected = {0};
+
+protected:
+    void OnSelectTabel(wxCommandEvent &event);
+    void OnSelectRadio(wxMouseEvent &event);
 };
 
-} // GUI
-} // Slic3r
+wxDECLARE_EVENT(EVT_PREFERENCES_SELECT_TAB, wxCommandEvent);
 
+}} // namespace Slic3r::GUI
 
 #endif /* slic3r_Preferences_hpp_ */

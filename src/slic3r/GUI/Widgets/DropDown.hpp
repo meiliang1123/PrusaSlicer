@@ -1,31 +1,30 @@
 #ifndef slic3r_GUI_DropDown_hpp_
 #define slic3r_GUI_DropDown_hpp_
 
-#include <wx/stattext.h>
-#include <wx/popupwin.h>
-
 #include <boost/date_time/posix_time/posix_time.hpp>
-
+#include <wx/stattext.h>
 #include "../wxExtensions.hpp"
 #include "StateHandler.hpp"
+#include "PopupWindow.hpp"
 
 #define DD_NO_CHECK_ICON    0x0001
-#define DD_NO_DROP_ICON     0x0002
-#define DD_NO_TEXT          0x0004
-#define DD_STYLE_MASK       0x0008
+#define DD_NO_TEXT          0x0002
+#define DD_STYLE_MASK       0x0003
 
 wxDECLARE_EVENT(EVT_DISMISS, wxCommandEvent);
 
-class DropDown : public wxPopupTransientWindow
+class DropDown : public PopupWindow
 {
     std::vector<wxString> &       texts;
-    std::vector<wxBitmapBundle> & icons;
+    std::vector<wxString> &       tips;
+    std::vector<wxBitmap> &     icons;
     bool                          need_sync  = false;
     int                         selection = -1;
     int                         hover_item = -1;
 
-    double radius;
+    double radius = 0;
     bool   use_content_width = false;
+    bool   limit_max_content_width = false;
     bool   align_icon        = false;
     bool   text_off          = false;
 
@@ -41,23 +40,25 @@ class DropDown : public wxPopupTransientWindow
     ScalableBitmap check_bitmap;
 
     bool pressedDown = false;
-    bool slider_grabbed = false;
     boost::posix_time::ptime dismissTime;
     wxPoint                  offset; // x not used
     wxPoint                  dragStart;
 
 public:
     DropDown(std::vector<wxString> &texts,
-             std::vector<wxBitmapBundle> &icons);
+             std::vector<wxString> &tips,
+             std::vector<wxBitmap> &icons);
     
     DropDown(wxWindow *     parent,
              std::vector<wxString> &texts,
-             std::vector<wxBitmapBundle> &icons,
+             std::vector<wxString> &tips,
+             std::vector<wxBitmap> &icons,
              long           style     = 0);
     
     void Create(wxWindow *     parent,
              long           style     = 0);
     
+public:
     void Invalidate(bool clear = false);
 
     int GetSelection() const { return selection; }
@@ -67,6 +68,7 @@ public:
     wxString GetValue() const;
     void     SetValue(const wxString &value);
 
+public:
     void SetCornerRadius(double radius);
 
     void SetBorderColor(StateColor const & color);
@@ -77,17 +79,14 @@ public:
 
     void SetSelectorBackgroundColor(StateColor const &color);
 
-    void SetUseContentWidth(bool use);
+    void SetUseContentWidth(bool use, bool limit_max_content_width = false);
 
     void SetAlignIcon(bool align);
     
+public:
     void Rescale();
 
     bool HasDismissLongTime();
-
-    static void SetTransparentBG(wxDC& dc, wxWindow* win);
-
-    void CallDismissAndNotify() { DismissAndNotify(); }
     
 protected:
     void OnDismiss() override;

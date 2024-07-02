@@ -26,6 +26,12 @@ struct BLConfig {
     Coord min_obj_distance = 0;
     Coord epsilon = DefaultEpsilon<Coord>::Value;
     bool allow_rotations = false;
+    //BBS: sort function for selector
+    std::function<bool(_Item<RawShape>& i1, _Item<RawShape>& i2)> sortfunc;
+    //BBS: excluded region for V4 bed
+    std::vector<_Item<RawShape> > m_excluded_regions;
+    _ItemGroup<RawShape> m_excluded_items;
+    std::vector < _Item<RawShape> > m_nonprefered_regions;
 };
 
 template<class RawShape>
@@ -76,7 +82,14 @@ public:
         return availableSpace(item, Dir::DOWN);
     }
 
+    double score() const { return score_; }
+    //BBS
+    void plateID(int id) { plate_id = id; }
+    int plateID() { return plate_id; }
+
 protected:
+    double score_ = 0;
+    int plate_id = 0;   // BBS
 
     PackResult _trypack(Item& item) {
 
@@ -375,7 +388,7 @@ protected:
                 sl::addVertex(rsh, item.vertex(static_cast<unsigned long>(i)));
         };
 
-        auto addOthers = [&]() {
+        auto addOthers = [&addOthers_, &reverseAddOthers_]() {
             if constexpr (!is_clockwise<RawShape>())
                 addOthers_();
             else
@@ -415,6 +428,7 @@ protected:
 
 };
 
-}} // namespace libnest2d::placers
+}
+}
 
 #endif //BOTTOMLEFT_HPP

@@ -1,8 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2023 David Kocík @kocikdav, Lukáš Matěna @lukasmatena, Oleksandra Iushchenko @YuSanka, Vojtěch Bubník @bubnikv, Vojtěch Král @vojtechkral
-///|/ Copyright (c) 2018 Martin Loidl @LoidlM
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "OctoPrint.hpp"
 
 #include <algorithm>
@@ -55,8 +50,15 @@ std::string get_host_from_url(const std::string& url_in)
             char* host;
             rc = curl_url_get(hurl, CURLUPART_HOST, &host, 0);
             if (rc == CURLUE_OK) {
-                out = host;
-                curl_free(host);
+                char* port;
+                rc = curl_url_get(hurl, CURLUPART_PORT, &port, 0);
+                if (rc == CURLUE_OK && port != nullptr) {
+                    out = std::string(host) + ":" + port;
+                    curl_free(port);
+                } else {
+                    out = host;
+                    curl_free(host);
+                }
             }
             else
                 BOOST_LOG_TRIVIAL(error) << "OctoPrint get_host_from_url: failed to get host form URL " << url;
@@ -568,7 +570,7 @@ bool SL1Host::validate_version_text(const boost::optional<std::string> &version_
 // PrusaLink
 PrusaLink::PrusaLink(DynamicPrintConfig* config, bool show_after_message) :
     OctoPrint(config),
-    m_authorization_type(dynamic_cast<const ConfigOptionEnum<AuthorizationType>*>(config->option("printhost_authorization_type"))->value),
+    m_authorization_type(config->option<ConfigOptionEnum<AuthorizationType>>("printhost_authorization_type")->value),
     m_username(config->opt_string("printhost_user")),
     m_password(config->opt_string("printhost_password")),
     m_show_after_message(show_after_message)
@@ -710,7 +712,7 @@ bool PrusaLink::get_storage(wxArrayString& storage_path, wxArrayString& storage_
     BOOST_LOG_TRIVIAL(info) << boost::format("%1%: Get storage at: %2%") % name % url;
 
     wxString wlang = GUI::wxGetApp().current_language_code();
-    std::string lang = GUI::into_u8(wlang.SubString(0, 1));
+    std::string lang = GUI::format(wlang.SubString(0, 1));
 
     auto http = Http::get(std::move(url));
     set_auth(http);
@@ -750,8 +752,8 @@ bool PrusaLink::get_storage(wxArrayString& storage_path, wxArrayString& storage_
                 const auto available = section.second.get_optional<bool>("available");
                 if (path && (!available || *available)) {
                     StorageInfo si;
-                    si.path = boost::nowide::widen(*path);
-                    si.name = name ? boost::nowide::widen(*name) : wxString();
+                    si.path = wxString(*path);
+                    si.name = name ? wxString(*name) : wxString();
                     // If read_only is missing, assume it is NOT read only.
                     // si.read_only = read_only ? *read_only : false; // version without "ro"
                     si.read_only = (read_only ? *read_only : (ro ? *ro : false));
@@ -1161,7 +1163,7 @@ void PrusaConnect::set_http_post_header_args(Http& http, PrintHostPostUploadActi
 {
     // Language for accept message
     wxString wlang = GUI::wxGetApp().current_language_code();
-    std::string lang = GUI::into_u8(wlang.SubString(0, 1));
+    std::string lang = GUI::format(wlang.SubString(0, 1));
     http.header("Accept-Language", lang);
     // Post action
     if (post_action == PrintHostPostUploadAction::StartPrint) {

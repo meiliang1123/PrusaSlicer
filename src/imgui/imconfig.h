@@ -139,74 +139,90 @@ namespace ImGui
     const wchar_t EjectHoverButton         = 0x13;
     const wchar_t CancelButton             = 0x14;
     const wchar_t CancelHoverButton        = 0x15;
+    const wchar_t CloseNotifDarkButton     = 0x16;
+    const wchar_t CloseNotifHoverDarkButton = 0x17;
 //    const wchar_t VarLayerHeightMarker     = 0x16;
-    const wchar_t RevertButton             = 0x16;
 
     const wchar_t RightArrowButton         = 0x18;
     const wchar_t RightArrowHoverButton    = 0x19;
     const wchar_t PreferencesButton        = 0x1A;
     const wchar_t PreferencesHoverButton   = 0x1B;
+    const wchar_t DocumentationDarkButton  = 0x1C;
+    const wchar_t DocumentationHoverDarkButton = 0x1D;
 //    const wchar_t SinkingObjectMarker      = 0x1C;
 //    const wchar_t CustomSupportsMarker     = 0x1D;
 //    const wchar_t CustomSeamMarker         = 0x1E;
 //    const wchar_t MmuSegmentationMarker    = 0x1F;
-    const wchar_t PlugMarker               = 0x1C;
-    const wchar_t DowelMarker              = 0x1D;
-    const wchar_t SnapMarker               = 0x1E;
-    const wchar_t HorizontalHide           = 0xB4;
-    const wchar_t HorizontalShow           = 0xB6;
+
     // Do not forget use following letters only in wstring
-    const wchar_t DocumentationButton      = 0x2600;
-    const wchar_t DocumentationHoverButton = 0x2601;
-    const wchar_t ClippyMarker             = 0x2602;
-    const wchar_t InfoMarker               = 0x2603;
-    const wchar_t SliderFloatEditBtnIcon   = 0x2604;
-    const wchar_t SliderFloatEditBtnPressedIcon = 0x2605;
-    const wchar_t ClipboardBtnIcon         = 0x2606;
-    const wchar_t PlayButton               = 0x2618;
-    const wchar_t PlayHoverButton          = 0x2619;
-    const wchar_t PauseButton              = 0x261A;
-    const wchar_t PauseHoverButton         = 0x261B;
-    const wchar_t OpenButton               = 0x261C;
-    const wchar_t OpenHoverButton          = 0x261D;
-    const wchar_t SlaViewOriginal          = 0x261E;
-    const wchar_t SlaViewProcessed         = 0x261F;
+    //BBS use 08xx to avoid unicode character which may be used
+    const wchar_t DocumentationButton      = 0x0800;
+    const wchar_t DocumentationHoverButton = 0x0801;
+    const wchar_t ClippyMarker             = 0x0802;
+    const wchar_t InfoMarker               = 0x0803;
+    const wchar_t SliderFloatEditBtnIcon   = 0x0804;
+    const wchar_t ClipboardBtnIcon         = 0x0805;
 
-    const wchar_t LegendTravel             = 0x2701;
-    const wchar_t LegendWipe               = 0x2702;
-    const wchar_t LegendRetract            = 0x2703;
-    const wchar_t LegendDeretract          = 0x2704;
-    const wchar_t LegendSeams              = 0x2705;
-    const wchar_t LegendToolChanges        = 0x2706;
-    const wchar_t LegendColorChanges       = 0x2707;
-    const wchar_t LegendPausePrints        = 0x2708;
-    const wchar_t LegendCustomGCodes       = 0x2709;
-    const wchar_t LegendCOG                = 0x2710;
-    const wchar_t LegendShells             = 0x2711;
-    const wchar_t LegendToolMarker         = 0x2712;
-    const wchar_t WarningMarkerSmall       = 0x2713;
-    const wchar_t ExpandBtn                = 0x2714;
-    const wchar_t InfoMarkerSmall          = 0x2716;
-    const wchar_t CollapseBtn              = 0x2715;
+    // BBS
+    const wchar_t CircleButtonIcon         = 0x0810;
+    const wchar_t TriangleButtonIcon       = 0x0811;
+    const wchar_t FillButtonIcon           = 0x0812;
+    const wchar_t HeightRangeIcon          = 0x0813;
+    const wchar_t FoldButtonIcon           = 0x0814;
+    const wchar_t UnfoldButtonIcon         = 0x0815;
+    const wchar_t SphereButtonIcon         = 0x0816;
+    const wchar_t GapFillIcon              = 0x0817;
+    const wchar_t ConfirmIcon              = 0x0818;
 
-    // icons for double slider (middle size icons)
-    const wchar_t Lock                     = 0x2801;
-    const wchar_t LockHovered              = 0x2802;
-    const wchar_t Unlock                   = 0x2803;
-    const wchar_t UnlockHovered            = 0x2804;
-    const wchar_t DSRevert                 = 0x2805;
-    const wchar_t DSRevertHovered          = 0x2806;
-    const wchar_t DSSettings               = 0x2807;
-    const wchar_t DSSettingsHovered        = 0x2808;
-    // icons for double slider (small size icons)
-    const wchar_t ErrorTick                = 0x2809;
-    const wchar_t ErrorTickHovered         = 0x280A;
-    const wchar_t PausePrint               = 0x280B;
-    const wchar_t PausePrintHovered        = 0x280C;
-    const wchar_t EditGCode                = 0x280D;
-    const wchar_t EditGCodeHovered         = 0x280E;
-    const wchar_t RemoveTick               = 0x280F;
-    const wchar_t RemoveTickHovered        = 0x2810;
+    const wchar_t MinimalizeDarkButton           = 0x081C;
+    const wchar_t MinimalizeHoverDarkButton      = 0x081D;
+    const wchar_t RightArrowDarkButton           = 0x081E;
+    const wchar_t RightArrowHoverDarkButton      = 0x081F;
+    const wchar_t PreferencesDarkButton          = 0x0820;
+    const wchar_t PreferencesHoverDarkButton     = 0x0821;
+
+    const wchar_t CircleButtonDarkIcon     = 0x0822;
+    const wchar_t TriangleButtonDarkIcon   = 0x0823;
+    const wchar_t FillButtonDarkIcon       = 0x0824;
+    const wchar_t HeightRangeDarkIcon      = 0x0825;
+    const wchar_t SphereButtonDarkIcon     = 0x0826;
+    const wchar_t GapFillDarkIcon          = 0x0827;
+    const wchar_t ConfirmDarkIcon          = 0x0828;
+
+    const wchar_t TextSearchIcon           = 0x0828;
+    const wchar_t TextSearchCloseIcon      = 0x0829;
+
+    const wchar_t ExpandBtn       = 0x0830;
+    const wchar_t CollapseBtn     = 0x0831;
+    const wchar_t RevertBtn       = 0x0832;
+
+    const wchar_t CloseBlockNotifButton      = 0x0833;
+    const wchar_t CloseBlockNotifHoverButton = 0x0834;
+    const wchar_t BlockNotifErrorIcon        = 0x0835;
+    const wchar_t ClipboardBtnDarkIcon       = 0x0836;
+
+    const wchar_t PrevArrowBtnIcon         = 0x0837; 
+    const wchar_t PrevArrowHoverBtnIcon    = 0x0838; 
+    const wchar_t NextArrowBtnIcon         = 0x0839;
+    const wchar_t NextArrowHoverBtnIcon    = 0x0840;
+    const wchar_t OpenArrowIcon            = 0x0841;
+    const wchar_t CollapseArrowIcon        = 0x0842;
+    const wchar_t ExpandArrowIcon          = 0x0843;
+    const wchar_t CompleteIcon             = 0x0844;
+
+    // Orca
+    const wchar_t PlayButton           = 0x0850;
+    const wchar_t PlayDarkButton       = 0x0851;
+    const wchar_t PlayHoverButton      = 0x0852;
+    const wchar_t PlayHoverDarkButton  = 0x0853;
+    const wchar_t PauseButton          = 0x0854;
+    const wchar_t PauseDarkButton      = 0x0855;
+    const wchar_t PauseHoverButton     = 0x0856;
+    const wchar_t PauseHoverDarkButton = 0x0857;
+    const wchar_t OpenButton           = 0x0858;
+    const wchar_t OpenDarkButton       = 0x0859;
+    const wchar_t OpenHoverButton      = 0x085A;
+    const wchar_t OpenHoverDarkButton  = 0x085B;
 
     //    void MyFunction(const char* name, const MyMatrix44& v);
 }

@@ -5,7 +5,6 @@
 #include "GLGizmoRotate.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/ImGuiWrapper.hpp"
-#include "slic3r/GUI/GUI_ObjectManipulation.hpp"
 
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI.hpp"
@@ -13,7 +12,6 @@
 #include "slic3r/GUI/Jobs/RotoptimizeJob.hpp"
 
 #include "libslic3r/PresetBundle.hpp"
-#include "libslic3r/Model.hpp"
 
 #include <GL/glew.h>
 
@@ -68,7 +66,7 @@ std::string GLGizmoRotate::get_tooltip() const
     case Y: { axis = "Y"; break; }
     case Z: { axis = "Z"; break; }
     }
-    return (m_hover_id == 0 || m_grabbers.front().dragging) ? axis + ": " + format(float(Geometry::rad2deg(m_angle)), 4) : "";
+    return (m_hover_id == 0 || m_grabbers.front().dragging) ? axis + ": " + format(float(Geometry::rad2deg(m_angle)), 2) : "";
 }
 
 bool GLGizmoRotate::on_mouse(const wxMouseEvent &mouse_event)
@@ -148,21 +146,15 @@ void GLGizmoRotate::on_render()
     const double grabber_radius = (double)m_radius * (1.0 + (double)GrabberOffset);
     m_grabbers.front().center = Vec3d(::cos(m_angle) * grabber_radius, ::sin(m_angle) * grabber_radius, 0.0);
     m_grabbers.front().angles.z() = m_angle;
+    m_grabbers.front().color = AXES_COLOR[m_axis];
+    m_grabbers.front().hover_color = AXES_HOVER_COLOR[m_axis];
 
     glsafe(::glEnable(GL_DEPTH_TEST));
 
     m_grabbers.front().matrix = local_transform(selection);
 
-#if !SLIC3R_OPENGL_ES
-    if (!OpenGLManager::get_gl_info().is_core_profile())
-        glsafe(::glLineWidth((m_hover_id != -1) ? 2.0f : 1.5f));
-#endif // !SLIC3R_OPENGL_ES
-
-#if SLIC3R_OPENGL_ES
-    GLShaderProgram* shader = wxGetApp().get_shader("dashed_lines");
-#else
-    GLShaderProgram* shader = OpenGLManager::get_gl_info().is_core_profile() ? wxGetApp().get_shader("dashed_thick_lines") : wxGetApp().get_shader("flat");
-#endif // SLIC3R_OPENGL_ES
+    glsafe(::glLineWidth((m_hover_id != -1) ? 2.0f : 1.5f));
+    GLShaderProgram* shader = wxGetApp().get_shader("flat");
     if (shader != nullptr) {
         shader->start_using();
 
@@ -170,16 +162,6 @@ void GLGizmoRotate::on_render()
         const Transform3d view_model_matrix = camera.get_view_matrix() * m_grabbers.front().matrix;
         shader->set_uniform("view_model_matrix", view_model_matrix);
         shader->set_uniform("projection_matrix", camera.get_projection_matrix());
-#if !SLIC3R_OPENGL_ES
-        if (OpenGLManager::get_gl_info().is_core_profile()) {
-#endif // !SLIC3R_OPENGL_ES
-            const std::array<int, 4>& viewport = camera.get_viewport();
-            shader->set_uniform("viewport_size", Vec2d(double(viewport[2]), double(viewport[3])));
-            shader->set_uniform("width", 0.25f);
-            shader->set_uniform("gap_size", 0.0f);
-#if !SLIC3R_OPENGL_ES
-        }
-#endif // !SLIC3R_OPENGL_ES
 
         const bool radius_changed = std::abs(m_old_radius - m_radius) > EPSILON;
         m_old_radius = m_radius;
@@ -219,12 +201,14 @@ void GLGizmoRotate::init_data_from_selection(const Selection& selection)
     m_snap_fine_out_radius = m_snap_fine_in_radius + m_radius * ScaleLongTooth;
 }
 
+//BBS: add input window for move
 void GLGizmoRotate3D::on_render_input_window(float x, float y, float bottom_limit)
 {
-    if (wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology() != ptSLA)
-        return;
-
-    RotoptimzeWindow popup{m_imgui, m_rotoptimizewin_state, {x, y, bottom_limit}};
+    //if (wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology() != ptSLA)
+    //    return;
+    if (m_object_manipulation)
+        m_object_manipulation->do_render_rotate_window(m_imgui, "Rotate", x, y, bottom_limit);
+    //RotoptimzeWindow popup{m_imgui, m_rotoptimizewin_state, {x, y, bottom_limit}};
 }
 
 void GLGizmoRotate3D::load_rotoptimize_state()
@@ -511,12 +495,15 @@ Vec3d GLGizmoRotate::mouse_position_in_local_plane(const Linef3& mouse_ray) cons
         return local_mouse_ray.intersect_plane(0.0);
 }
 
-GLGizmoRotate3D::GLGizmoRotate3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id)
+//BBS: GUI refactor: add obj manipulation
+GLGizmoRotate3D::GLGizmoRotate3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id, GizmoObjectManipulation* obj_manipulation)
     : GLGizmoBase(parent, icon_filename, sprite_id)
     , m_gizmos({ 
         GLGizmoRotate(parent, GLGizmoRotate::X), 
         GLGizmoRotate(parent, GLGizmoRotate::Y),
         GLGizmoRotate(parent, GLGizmoRotate::Z) })
+	//BBS: GUI refactor: add obj manipulation
+    , m_object_manipulation(obj_manipulation)
 {
     load_rotoptimize_state();
 }
@@ -545,15 +532,22 @@ bool GLGizmoRotate3D::on_mouse(const wxMouseEvent &mouse_event)
 }
 
 void GLGizmoRotate3D::data_changed(bool is_serializing) {
-    if (m_parent.get_selection().is_wipe_tower()) {
+    const Selection &selection = m_parent.get_selection();
+    bool is_wipe_tower = selection.is_wipe_tower();
+    if (is_wipe_tower) {
+        DynamicPrintConfig& config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        float wipe_tower_rotation_angle =
+            dynamic_cast<const ConfigOptionFloat *>(
+                config.option("wipe_tower_rotation_angle"))
+                ->value;
+        set_rotation(Vec3d(0., 0., (M_PI / 180.) * wipe_tower_rotation_angle));
         m_gizmos[0].disable_grabber();
         m_gizmos[1].disable_grabber();
-    }
-    else {
+    } else {
+        set_rotation(Vec3d::Zero());
         m_gizmos[0].enable_grabber();
         m_gizmos[1].enable_grabber();
     }
-    set_rotation(Vec3d::Zero());
 }
 
 bool GLGizmoRotate3D::on_init()
@@ -576,8 +570,9 @@ std::string GLGizmoRotate3D::on_get_name() const
 
 bool GLGizmoRotate3D::on_is_activable() const
 {
+    // BBS: don't support rotate wipe tower
     const Selection& selection = m_parent.get_selection();
-    return !selection.is_any_cut_volume() && !selection.is_any_connector() && !selection.is_empty();
+    return !m_parent.get_selection().is_empty() && !selection.is_wipe_tower();
 }
 
 void GLGizmoRotate3D::on_start_dragging()
@@ -633,8 +628,9 @@ void GLGizmoRotate3D::on_unregister_raycasters_for_picking()
 GLGizmoRotate3D::RotoptimzeWindow::RotoptimzeWindow(ImGuiWrapper *   imgui,
                                                     State &          state,
                                                     const Alignment &alignment)
+    : m_imgui{imgui}
 {
-    ImGuiPureWrap::begin(_u8L("Optimize orientation"), ImGuiWindowFlags_NoMove |
+    imgui->begin(_L("Optimize orientation"), ImGuiWindowFlags_NoMove |
                                      ImGuiWindowFlags_AlwaysAutoResize |
                                      ImGuiWindowFlags_NoCollapse);
 
@@ -662,9 +658,11 @@ GLGizmoRotate3D::RotoptimzeWindow::RotoptimzeWindow(ImGuiWrapper *   imgui,
         for (size_t i = 0; i < RotoptimizeJob::get_methods_count(); ++i) {
             if (ImGui::Selectable(RotoptimizeJob::get_method_name(i).c_str())) {
                 state.method_id = i;
+#ifdef SUPPORT_SLA_AUTO_ROTATE
                 wxGetApp().app_config->set("sla_auto_rotate",
                                            "method_id",
                                            std::to_string(state.method_id));
+#endif SUPPORT_SLA_AUTO_ROTATE
             }
 
             if (ImGui::IsItemHovered())
@@ -681,7 +679,7 @@ GLGizmoRotate3D::RotoptimzeWindow::RotoptimzeWindow(ImGuiWrapper *   imgui,
 
     ImGui::Separator();
 
-    auto btn_txt = _u8L("Apply");
+    auto btn_txt = _L("Apply");
     auto btn_txt_sz = ImGui::CalcTextSize(btn_txt.c_str());
     ImVec2 button_sz = {btn_txt_sz.x + padding.x, btn_txt_sz.y + padding.y};
     ImGui::SetCursorPosX(padding.x + sz.x - button_sz.x);
@@ -689,7 +687,7 @@ GLGizmoRotate3D::RotoptimzeWindow::RotoptimzeWindow(ImGuiWrapper *   imgui,
     if (!wxGetApp().plater()->get_ui_job_worker().is_idle())
         imgui->disabled_begin(true);
 
-    if ( ImGuiPureWrap::button(btn_txt) ) {
+    if ( imgui->button(btn_txt) ) {
         replace_job(wxGetApp().plater()->get_ui_job_worker(),
                     std::make_unique<RotoptimizeJob>());
     }
@@ -699,7 +697,7 @@ GLGizmoRotate3D::RotoptimzeWindow::RotoptimzeWindow(ImGuiWrapper *   imgui,
 
 GLGizmoRotate3D::RotoptimzeWindow::~RotoptimzeWindow()
 {
-    ImGuiPureWrap::end();
+    m_imgui->end();
 }
 
 } // namespace GUI

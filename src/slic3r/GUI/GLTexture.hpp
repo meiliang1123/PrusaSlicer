@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2022 Enrico Turri @enricoturri1966, Tomáš Mészáros @tamasmeszaros, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_GLTexture_hpp_
 #define slic3r_GLTexture_hpp_
 
@@ -9,6 +5,9 @@
 #include <string>
 #include <vector>
 #include <thread>
+
+#include <wx/colour.h>
+#include <wx/font.h>
 
 class wxImage;
 
@@ -95,6 +94,8 @@ namespace GUI {
 
         bool load_from_file(const std::string& filename, bool use_mipmaps, ECompressionType compression_type, bool apply_anisotropy);
         bool load_from_svg_file(const std::string& filename, bool use_mipmaps, bool compress, bool apply_anisotropy, unsigned int max_size_px);
+        //BBS load GLTexture from raw pixel data
+        bool load_from_raw_data(std::vector<unsigned char> data, unsigned int w, unsigned int h, bool apply_anisotropy = false);
         // meanings of states: (std::pair<int, bool>)
         // first field (int):
         // 0 -> no changes
@@ -105,8 +106,16 @@ namespace GUI {
         // true -> add background color
         bool load_from_svg_files_as_sprites_array(const std::vector<std::string>& filenames, const std::vector<std::pair<int, bool>>& states, unsigned int sprite_size_px, bool compress);
         void reset();
+        //BBS: add generate logic for text strings
+        int m_original_width;
+        int m_original_height;
+
+        bool generate_texture_from_text(const std::string& text_str, wxFont& font, int& ww, int& hh, int &hl, wxColor background = *wxBLACK, wxColor foreground = *wxWHITE);
+        bool generate_from_text(const std::string& text_str, wxFont& font, wxColor background = *wxBLACK, wxColor foreground = *wxWHITE);
+        bool generate_from_text_string(const std::string& text_str, wxFont& font, wxColor background = *wxBLACK, wxColor foreground = *wxWHITE);
 
         unsigned int get_id() const { return m_id; }
+        int get_original_width() const { return m_original_width; }
         int get_width() const { return m_width; }
         int get_height() const { return m_height; }
 

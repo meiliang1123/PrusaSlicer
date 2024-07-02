@@ -6,7 +6,7 @@
 
 class Button : public StaticBox
 {
-    wxSize textSize;
+    wxRect textSize;
     wxSize minSize; // set by outer
     wxSize paddingSize;
     ScalableBitmap active_icon;
@@ -17,6 +17,7 @@ class Button : public StaticBox
     bool pressedDown = false;
     bool m_selected  = true;
     bool canFocus  = true;
+    bool isCenter = true;
 
     static const int buttonWidth = 200;
     static const int buttonHeight = 50;
@@ -24,11 +25,13 @@ class Button : public StaticBox
 public:
     Button();
 
-    Button(wxWindow* parent, wxString text, wxString icon = "", long style = 0, wxSize iconSize = wxSize(16, 16));
+    Button(wxWindow* parent, wxString text, wxString icon = "", long style = 0, int iconSize = 0, wxWindowID btn_id = wxID_ANY);
 
-    bool Create(wxWindow* parent, wxString text, wxString icon = "", long style = 0, wxSize iconSize = wxSize(16, 16));
+    bool Create(wxWindow* parent, wxString text, wxString icon = "", long style = 0, int iconSize = 0, wxWindowID btn_id = wxID_ANY);
 
     void SetLabel(const wxString& label) override;
+
+    bool SetFont(const wxFont& font) override;
 
     void SetIcon(const wxString& icon);
 
@@ -47,6 +50,12 @@ public:
     bool Enable(bool enable = true) override;
 
     void SetCanFocus(bool canFocus) override;
+
+    void SetValue(bool state);
+
+    bool GetValue() const;
+
+    void SetCenter(bool isCenter);
 
     void Rescale();
 

@@ -1,12 +1,10 @@
-///|/ Copyright (c) Prusa Research 2022 - 2023 Pavel Mikuš @Godrak, Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_ExtrusionProcessor_hpp_
 #define slic3r_ExtrusionProcessor_hpp_
 
+// This algorithm is copied from PrusaSlicer, original author is Pavel Mikus(pavel.mikus.mail@seznam.cz)
+
 #include "../AABBTreeLines.hpp"
-#include "../SupportSpotsGenerator.hpp"
+//#include "../SupportSpotsGenerator.hpp"
 #include "../libslic3r.h"
 #include "../ExtrusionEntity.hpp"
 #include "../Layer.hpp"
@@ -17,24 +15,17 @@
 #include "../ClipperUtils.hpp"
 #include "../Flow.hpp"
 #include "../Config.hpp"
-#include "../Line.hpp"
-#include "../Exception.hpp"
-#include "../PrintConfig.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <cstddef>
-#include <iterator>
 #include <limits>
 #include <numeric>
-#include <optional>
-#include <ostream>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-namespace Slic3r { namespace ExtrusionProcessor {
+namespace Slic3r {
 
 struct ExtendedPoint
 {
@@ -249,21 +240,159 @@ std::vector<ExtendedPoint> estimate_points_properties(const POINTS              
     return points;
 }
 
-ExtrusionPaths calculate_and_split_overhanging_extrusions(const ExtrusionPath                             &path,
-                                                          const AABBTreeLines::LinesDistancer<Linef>      &unscaled_prev_layer,
-                                                          const AABBTreeLines::LinesDistancer<CurledLine> &prev_layer_curled_lines);
+struct ProcessedPoint
+{
+    Point p;
+    float speed = 1.0f;
+    float overlap = 1.0f;
+};
 
-ExtrusionEntityCollection calculate_and_split_overhanging_extrusions(
-    const ExtrusionEntityCollection                 *ecc,
-    const AABBTreeLines::LinesDistancer<Linef>      &unscaled_prev_layer,
-    const AABBTreeLines::LinesDistancer<CurledLine> &prev_layer_curled_lines);
+class ExtrusionQualityEstimator
+{
+    std::unordered_map<const PrintObject *, AABBTreeLines::LinesDistancer<Linef>> prev_layer_boundaries;
+    std::unordered_map<const PrintObject *, AABBTreeLines::LinesDistancer<Linef>> next_layer_boundaries;
+    std::unordered_map<const PrintObject *, AABBTreeLines::LinesDistancer<CurledLine>> prev_curled_extrusions;
+    std::unordered_map<const PrintObject *, AABBTreeLines::LinesDistancer<CurledLine>> next_curled_extrusions;
+    const PrintObject                                                            *current_object;
 
-std::pair<float, float> calculate_overhang_speed(const ExtrusionAttributes &attributes,
-                                                 const FullPrintConfig     &config,
-                                                 size_t                     extruder_id,
-                                                 float                      external_perim_reference_speed,
-                                                 float                      default_speed);
+public:
+    void set_current_object(const PrintObject *object) { current_object = object; }
 
-}} // namespace Slic3r::ExtrusionProcessor
+    void prepare_for_new_layer(const PrintObject * obj, const Layer *layer)
+    {
+        if (layer == nullptr) return;
+        const PrintObject *object = obj;
+        prev_layer_boundaries[object] = next_layer_boundaries[object];
+        next_layer_boundaries[object] = AABBTreeLines::LinesDistancer<Linef>{to_unscaled_linesf(layer->lslices)};
+        prev_curled_extrusions[object] = next_curled_extrusions[object];
+        next_curled_extrusions[object] = AABBTreeLines::LinesDistancer<CurledLine>{layer->curled_lines};
+    }
+
+    std::vector<ProcessedPoint> estimate_extrusion_quality(const ExtrusionPath                &path,
+                                                           const ConfigOptionPercents         &overlaps,
+                                                           const ConfigOptionFloatsOrPercents &speeds,
+                                                           float                               ext_perimeter_speed,
+                                                           float                               original_speed,
+                                                           bool								   slowdown_for_curled_edges)
+    {
+        size_t                               speed_sections_count = std::min(overlaps.values.size(), speeds.values.size());
+        std::vector<std::pair<float, float>> speed_sections;
+        
+        
+        
+        for (size_t i = 0; i < speed_sections_count; i++) {
+            float distance = path.width * (1.0 - (overlaps.get_at(i) / 100.0));
+            float speed    = speeds.get_at(i).percent ? (ext_perimeter_speed * speeds.get_at(i).value / 100.0) : speeds.get_at(i).value;
+            speed_sections.push_back({distance, speed});
+        }
+        std::sort(speed_sections.begin(), speed_sections.end(),
+                  [](const std::pair<float, float> &a, const std::pair<float, float> &b) { 
+                    if (a.first == b.first) {
+                        return a.second > b.second;
+                    }
+                    return a.first < b.first; });
+
+        std::pair<float, float> last_section{INFINITY, 0};
+        for (auto &section : speed_sections) {
+            if (section.first == last_section.first) {
+                section.second = last_section.second;
+            } else {
+                last_section = section;
+            }
+        }
+
+        std::vector<ExtendedPoint> extended_points =
+            estimate_points_properties<true, true, true, true>(path.polyline.points, prev_layer_boundaries[current_object], path.width);
+        const auto width_inv = 1.0f / path.width;
+        std::vector<ProcessedPoint> processed_points;
+        processed_points.reserve(extended_points.size());
+        for (size_t i = 0; i < extended_points.size(); i++) {
+            const ExtendedPoint &curr = extended_points[i];
+            const ExtendedPoint &next = extended_points[i + 1 < extended_points.size() ? i + 1 : i];
+            
+            float artificial_distance_to_curled_lines = 0.0;
+            if(slowdown_for_curled_edges) {
+            	// The following code artifically increases the distance to provide slowdown for extrusions that are over curled lines
+            	const double dist_limit = 10.0 * path.width;
+				{
+				Vec2d middle = 0.5 * (curr.position + next.position);
+				auto line_indices = prev_curled_extrusions[current_object].all_lines_in_radius(Point::new_scale(middle), scale_(dist_limit));
+					if (!line_indices.empty()) {
+						double len   = (next.position - curr.position).norm();
+						// For long lines, there is a problem with the additional slowdown. If by accident, there is small curled line near the middle of this long line
+                    	//  The whole segment gets slower unnecesarily. For these long lines, we do additional check whether it is worth slowing down.
+                    	// NOTE that this is still quite rough approximation, e.g. we are still checking lines only near the middle point
+                    	// TODO maybe split the lines into smaller segments before running this alg? but can be demanding, and GCode will be huge
+                    	if (len > 8) {
+                        	Vec2d dir   = Vec2d(next.position - curr.position) / len;
+                        	Vec2d right = Vec2d(-dir.y(), dir.x());
+
+                        	Polygon box_of_influence = {
+                            	scaled(Vec2d(curr.position + right * dist_limit)),
+                            	scaled(Vec2d(next.position + right * dist_limit)),
+                            	scaled(Vec2d(next.position - right * dist_limit)),
+                            	scaled(Vec2d(curr.position - right * dist_limit)),
+                        	};
+
+                        	double projected_lengths_sum = 0;
+                        	for (size_t idx : line_indices) {
+                            	const CurledLine &line   = prev_curled_extrusions[current_object].get_line(idx);
+                            	Lines             inside = intersection_ln({{line.a, line.b}}, {box_of_influence});
+                            	if (inside.empty())
+                                	continue;
+                            	double projected_length = abs(dir.dot(unscaled(Vec2d((inside.back().b - inside.back().a).cast<double>()))));
+                            	projected_lengths_sum += projected_length;
+                        	}
+                        	if (projected_lengths_sum < 0.4 * len) {
+                            	line_indices.clear();
+                        	}
+                    	}
+                    
+                    	for (size_t idx : line_indices) {
+                        	const CurledLine &line                 = prev_curled_extrusions[current_object].get_line(idx);
+                        	float             distance_from_curled = unscaled(line_alg::distance_to(line, Point::new_scale(middle)));
+                        	float             dist                 = path.width * (1.0 - (distance_from_curled / dist_limit)) *
+                                     (1.0 - (distance_from_curled / dist_limit)) *
+                                     (line.curled_height / (path.height * 10.0f)); // max_curled_height_factor from SupportSpotGenerator
+                        	artificial_distance_to_curled_lines = std::max(artificial_distance_to_curled_lines, dist);
+                    	}
+					}
+				}
+			}	
+
+            auto calculate_speed = [&speed_sections, &original_speed](float distance) {
+                float final_speed;
+                if (distance <= speed_sections.front().first) {
+                    final_speed = original_speed;
+                } else if (distance >= speed_sections.back().first) {
+                    final_speed = speed_sections.back().second;
+                } else {
+                    size_t section_idx = 0;
+                    while (distance > speed_sections[section_idx + 1].first) {
+                        section_idx++;
+                    }
+                    float t = (distance - speed_sections[section_idx].first) /
+                              (speed_sections[section_idx + 1].first - speed_sections[section_idx].first);
+                    t           = std::clamp(t, 0.0f, 1.0f);
+                    final_speed = (1.0f - t) * speed_sections[section_idx].second + t * speed_sections[section_idx + 1].second;
+                }
+                return final_speed;
+            };
+            
+            float extrusion_speed = std::min(calculate_speed(curr.distance), calculate_speed(next.distance));
+            if(slowdown_for_curled_edges) {
+                float curled_speed = calculate_speed(artificial_distance_to_curled_lines);
+            	extrusion_speed       = std::min(curled_speed, extrusion_speed); // adjust extrusion speed based on what is smallest - the calculated overhang speed or the artificial curled speed
+            }
+            
+            float overlap = std::min(1 - (curr.distance+artificial_distance_to_curled_lines) * width_inv, 1 - (next.distance+artificial_distance_to_curled_lines) * width_inv);
+			
+            processed_points.push_back({ scaled(curr.position), extrusion_speed, overlap });
+        }
+        return processed_points;
+    }
+};
+
+} // namespace Slic3r
 
 #endif // slic3r_ExtrusionProcessor_hpp_

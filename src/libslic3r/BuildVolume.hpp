@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2021 - 2022 Enrico Turri @enricoturri1966, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Filip Sykala @Jony01
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_BuildVolume_hpp_
 #define slic3r_BuildVolume_hpp_
 
@@ -16,47 +12,47 @@
 namespace Slic3r {
 
 struct GCodeProcessorResult;
-
+enum class BuildVolume_Type : unsigned char {
+  // Not set yet or undefined.
+  Invalid,
+  // Rectangular print bed. Most common, cheap to work with.
+  Rectangle,
+  // Circular print bed. Common on detals, cheap to work with.
+  Circle,
+  // Convex print bed. Complex to process.
+  Convex,
+  // Some non convex shape.
+  Custom
+};
 // For collision detection of objects and G-code (extrusion paths) against the build volume.
 class BuildVolume
 {
 public:
-    enum class Type : unsigned char
-    {
-        // Not set yet or undefined.
-        Invalid,
-        // Rectangular print bed. Most common, cheap to work with.
-        Rectangle,
-        // Circular print bed. Common on detals, cheap to work with.
-        Circle,
-        // Convex print bed. Complex to process.
-        Convex,
-        // Some non convex shape.
-        Custom
-    };
+
 
     // Initialized to empty, all zeros, Invalid.
     BuildVolume() {}
-    // Initialize from PrintConfig::bed_shape and PrintConfig::max_print_height
-    BuildVolume(const std::vector<Vec2d> &bed_shape, const double max_print_height);
+    // Initialize from PrintConfig::printable_area and PrintConfig::printable_height
+    BuildVolume(const std::vector<Vec2d> &printable_area, const double printable_height);
 
     // Source data, unscaled coordinates.
-    const std::vector<Vec2d>&   bed_shape()         const { return m_bed_shape; }
-    double                      max_print_height()  const { return m_max_print_height; }
+    const std::vector<Vec2d>&   printable_area()         const { return m_bed_shape; }
+    double                      printable_height()  const { return m_max_print_height; }
     
     // Derived data
-    Type                        type()              const { return m_type; }
+    BuildVolume_Type                        type()              const { return m_type; }
     // Format the type for console output.
-    static std::string_view     type_name(Type type);
+    static std::string_view     type_name(BuildVolume_Type type);
     std::string_view            type_name()         const { return type_name(m_type); }
-    bool                        valid()             const { return m_type != Type::Invalid; }
-    // Same as bed_shape(), but scaled coordinates.
+    bool                        valid()             const { return m_type != BuildVolume_Type::Invalid; }
+    // Same as printable_area(), but scaled coordinates.
     const Polygon&              polygon()           const { return m_polygon; }
     // Bounding box of polygon(), scaled.
     const BoundingBox&          bounding_box()      const { return m_bbox; }
-    // Bounding volume of bed_shape(), max_print_height(), unscaled.
+    // Bounding volume of printable_area(), printable_height(), unscaled.
     const BoundingBoxf3&        bounding_volume()   const { return m_bboxf; }
     BoundingBoxf                bounding_volume2d() const { return { to_2d(m_bboxf.min), to_2d(m_bboxf.max) }; }
+    indexed_triangle_set        bounding_mesh(bool scale=true) const;
 
     // Center of the print bed, unscaled.
     Vec2d                       bed_center()        const { return to_2d(m_bboxf.center()); }
@@ -95,18 +91,20 @@ public:
     // Called on final G-code paths.
     //FIXME The test does not take the thickness of the extrudates into account!
     bool         all_paths_inside(const GCodeProcessorResult& paths, const BoundingBoxf3& paths_bbox, bool ignore_bottom = true) const;
+    // Called on initial G-code preview on OpenGL vertex buffer interleaved normals and vertices.
+    bool         all_paths_inside_vertices_and_normals_interleaved(const std::vector<float>& paths, const Eigen::AlignedBox<float, 3>& bbox, bool ignore_bottom = true) const;
 
     const std::pair<std::vector<Vec2d>, std::vector<Vec2d>>& top_bottom_convex_hull_decomposition_scene() const { return m_top_bottom_convex_hull_decomposition_scene; }
     const std::pair<std::vector<Vec2d>, std::vector<Vec2d>>& top_bottom_convex_hull_decomposition_bed() const { return m_top_bottom_convex_hull_decomposition_bed; }
 
 private:
-    // Source definition of the print bed geometry (PrintConfig::bed_shape)
+    // Source definition of the print bed geometry (PrintConfig::printable_area)
     std::vector<Vec2d>  m_bed_shape;
-    // Source definition of the print volume height (PrintConfig::max_print_height)
-    double              m_max_print_height;
+    // Source definition of the print volume height (PrintConfig::printable_height)
+    double              m_max_print_height { 0.f };
 
     // Derived values.
-    Type                m_type { Type::Invalid };
+    BuildVolume_Type                m_type { BuildVolume_Type::Invalid };
     // Geometry of the print bed, scaled copy of m_bed_shape.
     Polygon             m_polygon;
     // Scaled snug bounding box around m_polygon.

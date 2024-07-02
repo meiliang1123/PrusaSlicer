@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2020 - 2023 Oleksandra Iushchenko @YuSanka, David Kocík @kocikdav
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_OG_CustomCtrl_hpp_
 #define slic3r_OG_CustomCtrl_hpp_
 
@@ -15,6 +11,7 @@
 #include "libslic3r/PrintConfig.hpp"
 
 #include "OptionsGroup.hpp"
+#include "I18N.hpp"
 
 // Translate the ifdef 
 #ifdef __WXOSX__
@@ -30,6 +27,7 @@ class OG_CustomCtrl :public wxPanel
 {
     wxFont  m_font;
     int     m_v_gap;
+    int     m_v_gap2;
     int     m_h_gap;
     int     m_em_unit;
 
@@ -39,7 +37,8 @@ class OG_CustomCtrl :public wxPanel
     int     m_max_win_width{0};
 
     struct CtrlLine {
-        wxCoord           height  { wxDefaultCoord };
+        wxCoord           width{ wxDefaultCoord };
+        wxCoord           height{ wxDefaultCoord };
         OG_CustomCtrl*    ctrl    { nullptr };
         const Line&       og_line;
 
@@ -62,12 +61,11 @@ class OG_CustomCtrl :public wxPanel
 
         void render_separator(wxDC& dc, wxCoord v_pos);
 
-        void    render(wxDC& dc, wxCoord v_pos);
-        wxCoord draw_mode_bmp(wxDC& dc, wxCoord v_pos);
-        wxCoord draw_text      (wxDC& dc, wxPoint pos, const wxString& text, const wxColour* color, int width, bool is_url = false);
+        void    render(wxDC& dc, wxCoord h_pos, wxCoord v_pos);
+        wxCoord draw_text      (wxDC& dc, wxPoint pos, const wxString& text, const wxColour* color, int width, bool is_url = false, bool is_main = false);
         wxPoint draw_blinking_bmp(wxDC& dc, wxPoint pos, bool is_blinking);
-        wxPoint draw_act_bmps(wxDC& dc, wxPoint pos, const wxBitmapBundle& bmp_undo_to_sys, const wxBitmapBundle& bmp_undo, bool is_blinking, size_t rect_id = 0);
-        wxCoord draw_edit_bmp(wxDC& dc, wxPoint pos, const wxBitmapBundle* bmp_edit);
+        wxPoint draw_act_bmps(wxDC& dc, wxPoint pos, const wxBitmap& bmp_undo_to_sys, const wxBitmap& bmp_undo, bool is_blinking, size_t rect_id = 0);
+        wxCoord draw_edit_bmp(wxDC& dc, wxPoint pos, const wxBitmap& bmp_edit);
         bool    launch_browser() const;
         bool    is_separator() const { return og_line.is_separator(); }
 
@@ -100,6 +98,11 @@ public:
     void    init_max_win_width();
     void    set_max_win_width(int max_win_width);
     int     get_max_win_width() { return m_max_win_width; }
+
+    //BBS
+    int    get_title_width();
+    // BBS
+    void fixup_items_positions();
 
     void    msw_rescale();
     void    sys_color_changed();

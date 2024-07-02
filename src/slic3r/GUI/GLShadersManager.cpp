@@ -1,15 +1,8 @@
-///|/ Copyright (c) Prusa Research 2020 - 2022 Enrico Turri @enricoturri1966, Tomáš Mészáros @tamasmeszaros, Filip Sykala @Jony01, Lukáš Hejl @hejllukas, Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/Platform.hpp"
 #include "GLShadersManager.hpp"
 #include "3DScene.hpp"
 #include "GUI_App.hpp"
-#if !SLIC3R_OPENGL_ES
-#include "OpenGLManager.hpp"
-#endif // !SLIC3R_OPENGL_ES
 
 #include <cassert>
 #include <algorithm>
@@ -24,7 +17,7 @@ std::pair<bool, std::string> GLShadersManager::init()
 {
     std::string error;
 
-    auto append_shader = [this, &error](const std::string& name, const GLShaderProgram::ShaderFilenames& filenames, 
+    auto append_shader = [this, &error](const std::string& name, const GLShaderProgram::ShaderFilenames& filenames,
         const std::initializer_list<std::string_view> &defines = {}) {
         m_shaders.push_back(std::make_unique<GLShaderProgram>());
         if (!m_shaders.back()->init_from_files(name, filenames, defines)) {
@@ -40,13 +33,7 @@ std::pair<bool, std::string> GLShadersManager::init()
 
     bool valid = true;
 
-#if SLIC3R_OPENGL_ES
-    const std::string prefix = "ES/";
-    // used to render wireframed triangles
-    valid &= append_shader("wireframe", { prefix + "wireframe.vs", prefix + "wireframe.fs" });
-#else
     const std::string prefix = GUI::wxGetApp().is_gl_version_greater_or_equal_to(3, 1) ? "140/" : "110/";
-#endif // SLIC3R_OPENGL_ES
     // imgui shader
     valid &= append_shader("imgui", { prefix + "imgui.vs", prefix + "imgui.fs" });
     // basic shader, used to render all what was previously rendered using the immediate mode
@@ -57,26 +44,17 @@ std::pair<bool, std::string> GLShadersManager::init()
     valid &= append_shader("flat_texture", { prefix + "flat_texture.vs", prefix + "flat_texture.fs" });
     // used to render 3D scene background
     valid &= append_shader("background", { prefix + "background.vs", prefix + "background.fs" });
-#if SLIC3R_OPENGL_ES
-    // used to render dashed lines
-    valid &= append_shader("dashed_lines", { prefix + "dashed_lines.vs", prefix + "dashed_lines.fs" });
-#else
-    if (GUI::OpenGLManager::get_gl_info().is_core_profile())
-        // used to render thick and/or dashed lines
-        valid &= append_shader("dashed_thick_lines", { prefix + "dashed_thick_lines.vs", prefix + "dashed_thick_lines.fs", prefix + "dashed_thick_lines.gs" });
-#endif // SLIC3R_OPENGL_ES
-    // used to render toolpaths center of gravity
-    valid &= append_shader("toolpaths_cog", { prefix + "toolpaths_cog.vs", prefix + "toolpaths_cog.fs" });
     // used to render bed axes and model, selection hints, gcode sequential view marker model, preview shells, options in gcode preview
     valid &= append_shader("gouraud_light", { prefix + "gouraud_light.vs", prefix + "gouraud_light.fs" });
-    // extend "gouraud_light" by adding clipping, used in sla gizmos
-    valid &= append_shader("gouraud_light_clip", { prefix + "gouraud_light_clip.vs", prefix + "gouraud_light_clip.fs" });
+    //used to render thumbnail
+    valid &= append_shader("thumbnail", { prefix + "thumbnail.vs", prefix + "thumbnail.fs"});
     // used to render printbed
     valid &= append_shader("printbed", { prefix + "printbed.vs", prefix + "printbed.fs" });
     // used to render options in gcode preview
     if (GUI::wxGetApp().is_gl_version_greater_or_equal_to(3, 3)) {
         valid &= append_shader("gouraud_light_instanced", { prefix + "gouraud_light_instanced.vs", prefix + "gouraud_light_instanced.fs" });
     }
+
     // used to render objects in 3d editor
     valid &= append_shader("gouraud", { prefix + "gouraud.vs", prefix + "gouraud.fs" }
 #if ENABLE_ENVIRONMENT_MAP

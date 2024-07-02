@@ -45,6 +45,16 @@ typedef Eigen::Matrix<int,   3, 1, Eigen::DontAlign> stl_triangle_vertex_indices
 static_assert(sizeof(stl_vertex) == 12, "size of stl_vertex incorrect");
 static_assert(sizeof(stl_normal) == 12, "size of stl_normal incorrect");
 
+typedef std::function<void(int current, int total, bool& cancel, std::string& model_id, std::string& code)> ImportstlProgressFn;
+
+typedef enum {
+    eNormal,  // normal face
+    eSmallOverhang,  // small overhang
+    eSmallHole,      // face with small hole
+    eExteriorAppearance,  // exterior appearance
+    eMaxNumFaceTypes
+}EnumFaceTypes;
+
 struct stl_facet {
 	stl_normal normal;
 	stl_vertex vertex[3];
@@ -88,8 +98,12 @@ struct stl_neighbors {
 };
 
 struct stl_stats {
-    stl_stats() { memset(&header, 0, 81); }
-    char          header[81];
+    stl_stats() {}
+    void  reset_header(int size) {
+        header.clear();
+        header.resize(size +1);
+    }
+    std::vector<char>    header;
     stl_type      type                      = (stl_type)0;
     // Should always match the number of facets stored inside stl_file::facet_start.
     uint32_t      number_of_facets          = 0;
@@ -147,28 +161,97 @@ struct stl_file {
 		return sizeof(*this) + sizeof(stl_facet) * facet_start.size() + sizeof(stl_neighbors) * neighbors_start.size();
 	}
 
+    char mw_data[256];
 	std::vector<stl_facet>     		facet_start;
 	std::vector<stl_neighbors> 		neighbors_start;
 	// Statistics
 	stl_stats     					stats;
 };
 
-struct indexed_triangle_set
-{
-	void clear() { indices.clear(); vertices.clear(); }
+struct FaceProperty
+{   // triangle face property
+    EnumFaceTypes type;
+    double area;
+    // stl_normal normal;
 
-	size_t memsize() const {
-		return sizeof(*this) + sizeof(stl_triangle_vertex_indices) * indices.size() + sizeof(stl_vertex) * vertices.size();
-	}
+    std::string to_string() const
+    {
+        std::string str;
+        // skip normal type facet to improve performance 
+        if (type > eNormal && type < eMaxNumFaceTypes) {
+            str += std::to_string(type);
+            if (area != 0.f)
+                str += " " + std::to_string(area);
+        }
+        return str;
+    }
 
-	std::vector<stl_triangle_vertex_indices> 	indices;
-    std::vector<stl_vertex>       				vertices;
+    void from_string(const std::string& str)
+    {
+        std::string val_str, area_str;
+        do {
+            if (str.empty())
+                break;
 
-    bool empty() const { return indices.empty() || vertices.empty(); }
-    bool operator==(const indexed_triangle_set& other) const { return this->indices == other.indices && this->vertices == other.vertices; }
+            this->type = (EnumFaceTypes)std::atoi(str.c_str());
+            if (this->type <= eNormal || this->type >= eMaxNumFaceTypes)
+                break;
+
+            size_t type_end_pos = str.find(" ");
+            if (type_end_pos == std::string::npos) {
+                this->area = 0.f;
+                return;
+            }
+
+            area_str = str.substr(type_end_pos + 1);
+            if (!area_str.empty())
+                this->area = std::atof(area_str.c_str());
+            else
+                this->area = 0.f;
+            return;
+        } while (0);
+
+        this->type = eNormal;
+        this->area = 0.f;
+    }
 };
 
-extern bool stl_open(stl_file *stl, const char *file);
+struct indexed_triangle_set
+{
+    indexed_triangle_set(std::vector<stl_triangle_vertex_indices>    indices_,
+        std::vector<stl_vertex>                     vertices_) :indices(indices_), vertices(vertices_) {
+        properties.resize(indices_.size());
+    }
+    indexed_triangle_set() {}
+
+    void clear() { indices.clear(); vertices.clear(); properties.clear(); }
+
+    size_t memsize() const {
+        return sizeof(*this) + (sizeof(stl_triangle_vertex_indices) + sizeof(FaceProperty)) * indices.size() + sizeof(stl_vertex) * vertices.size();
+    }
+
+    std::vector<stl_triangle_vertex_indices>    indices;
+    std::vector<stl_vertex>                     vertices;
+    std::vector<FaceProperty>                   properties;
+
+    bool empty() const { return indices.empty() || vertices.empty(); }
+    stl_vertex get_vertex(int facet_idx, int vertex_idx) const{
+        return vertices[indices[facet_idx][vertex_idx]];
+    }
+    float facet_area(int facet_idx) const {
+        return std::abs((get_vertex(facet_idx, 0) - get_vertex(facet_idx, 1))
+            .cross(get_vertex(facet_idx, 0) - get_vertex(facet_idx, 2)).norm()) / 2;
+    }
+    FaceProperty& get_property(int face_idx) {
+        if (properties.size() != indices.size()) {
+            properties.clear();
+            properties.resize(indices.size());
+        }
+        return properties[face_idx];
+    }
+};
+
+extern bool stl_open(stl_file *stl, const char *file, ImportstlProgressFn stlFn = nullptr,int custom_header_length = 80);
 extern void stl_stats_out(stl_file *stl, FILE *file, char *input_file);
 extern bool stl_print_neighbors(stl_file *stl, char *file);
 extern bool stl_write_ascii(stl_file *stl, const char *file, const char *label);
@@ -196,6 +279,7 @@ extern void stl_mirror_xy(stl_file *stl);
 extern void stl_mirror_yz(stl_file *stl);
 extern void stl_mirror_xz(stl_file *stl);
 
+extern float get_area(stl_facet* facet);
 extern void stl_get_size(stl_file *stl);
 
 // the following function is not used
@@ -304,17 +388,6 @@ extern bool its_write_obj(const indexed_triangle_set &its, const char *file);
 extern bool its_write_off(const indexed_triangle_set &its, const char *file);
 extern bool its_write_vrml(const indexed_triangle_set &its, const char *file);
 
-
-typedef Eigen::Matrix<float, 3, 1, Eigen::DontAlign> obj_color; // Vec3f
-/// <summary>
-/// write idexed triangle set into obj file with color
-/// </summary>
-/// <param name="its">input model</param>
-/// <param name="color">color of stored model</param>
-/// <param name="file">define place to store</param>
-/// <returns>True on success otherwise FALSE</returns>
-extern bool its_write_obj(const indexed_triangle_set& its, const std::vector<obj_color> &color, const char* file);
-
 extern bool stl_write_dxf(stl_file *stl, const char *file, char *label);
 inline void stl_calculate_normal(stl_normal &normal, stl_facet *facet) {
   normal = (facet->vertex[1] - facet->vertex[0]).cross(facet->vertex[2] - facet->vertex[0]);
@@ -331,7 +404,7 @@ extern void stl_calculate_volume(stl_file *stl);
 extern void stl_repair(stl_file *stl, bool fixall_flag, bool exact_flag, bool tolerance_flag, float tolerance, bool increment_flag, float increment, bool nearby_flag, int iterations, bool remove_unconnected_flag, bool fill_holes_flag, bool normal_directions_flag, bool normal_values_flag, bool reverse_all_flag, bool verbose_flag);
 
 extern void stl_allocate(stl_file *stl);
-extern void stl_read(stl_file *stl, int first_facet, bool first);
+extern void stl_read(stl_file *stl, int first_facet, bool first, ImportstlProgressFn stlFn = nullptr);
 extern void stl_facet_stats(stl_file *stl, stl_facet facet, bool &first);
 extern void stl_reallocate(stl_file *stl);
 extern void stl_add_facet(stl_file *stl, const stl_facet *new_facet);

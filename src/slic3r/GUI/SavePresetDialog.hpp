@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2020 - 2023 Oleksandra Iushchenko @YuSanka, David Kocík @kocikdav, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_SavePresetDialog_hpp_
 #define slic3r_SavePresetDialog_hpp_
 
@@ -10,15 +6,22 @@
 #include "libslic3r/Preset.hpp"
 #include "wxExtensions.hpp"
 #include "GUI_Utils.hpp"
+#include "Widgets/RadioBox.hpp"
+#include "Widgets/Button.hpp"
+#include "Widgets/RoundedRectangle.hpp"
+#include "Widgets/Label.hpp"
+#include "Widgets/TextInput.hpp"
 
 class wxString;
 class wxStaticText;
 class wxComboBox;
-class wxTextCtrl;
 class wxStaticBitmap;
 
-namespace Slic3r {
+#define SAVE_PRESET_DIALOG_DEF_COLOUR wxColour(255, 255, 255)
+#define SAVE_PRESET_DIALOG_INPUT_SIZE wxSize(FromDIP(360), FromDIP(24))
+#define SAVE_PRESET_DIALOG_BUTTON_SIZE wxSize(FromDIP(60), FromDIP(24))
 
+namespace Slic3r {
 namespace GUI {
 
 class SavePresetDialog : public DPIDialog
@@ -30,103 +33,89 @@ class SavePresetDialog : public DPIDialog
         Switch, 
         UndefAction
     };
-public:
-    struct Item
+
+    class Item : public wxWindow
     {
-        enum class ValidationType
+    public:
+        enum ValidationType
         {
             Valid,
             NoValid,
             Warning
         };
 
-        Item(Preset::Type type, const std::string& suffix, wxBoxSizer* sizer, SavePresetDialog* parent, bool is_for_multiple_save);
-        Item(wxWindow* parent, wxBoxSizer* sizer, const std::string& def_name, PresetCollection* presets, PrinterTechnology pt = ptFFF);
+        Item(Preset::Type type, const std::string& suffix, wxBoxSizer* sizer, SavePresetDialog* parent);
 
         void            update_valid_bmp();
-        void            accept();
-        void            Enable(bool enable = true);
+        void accept();
+        virtual void DoSetSize(int x, int y, int width, int height, int sizeFlags = wxSIZE_AUTO);
 
-        bool            is_valid()      const { return m_valid_type != ValidationType::NoValid; }
+        bool            is_valid()      const { return m_valid_type != NoValid; }
         Preset::Type    type()          const { return m_type; }
-        std::string     preset_name()   const;
+        std::string     preset_name()   const { return m_preset_name; }
+        //BBS: add project embedded preset relate logic
+        bool save_to_project() const { return m_save_to_project; }
 
-        struct PresetName {
-            std::string casei_name;
-            std::string name;
-
-            bool operator<(const PresetName& other) const { return other.casei_name > this->casei_name; }
-        };
-
-    private:
-        Preset::Type    m_type {Preset::TYPE_INVALID};
+        Preset::Type    m_type;
+        ValidationType  m_valid_type;
         std::string		m_preset_name;
-        bool            m_use_text_ctrl {true};
 
-        PrinterTechnology   m_printer_technology {ptAny};
-        ValidationType      m_valid_type    {ValidationType::NoValid};
-        wxWindow*           m_parent        {nullptr};
+        SavePresetDialog*   m_parent        {nullptr};
         wxStaticBitmap*     m_valid_bmp     {nullptr};
         wxComboBox*         m_combo         {nullptr};
-        wxTextCtrl*         m_text_ctrl     {nullptr};
+        TextInput*         m_input_ctrl    {nullptr};
         wxStaticText*       m_valid_label   {nullptr};
 
         PresetCollection*   m_presets       {nullptr};
 
-        std::vector<PresetName> m_casei_preset_names;
+        //BBS: add project embedded preset relate logic
+        RadioBox *          m_radio_user{nullptr};
+        RadioBox *          m_radio_project{nullptr};
+        bool                m_save_to_project {false};
 
-        std::string get_init_preset_name(const std::string &suffix);
-        void        init_input_name_ctrl(wxBoxSizer *input_name_sizer, std::string preset_name);
-        void        init_casei_preset_names();
-        const Preset*   get_existing_preset() const ;
-
-        void        update();
+        void update();
     };
-private:
+
     std::vector<Item*>   m_items;
 
+    Button*             m_confirm           {nullptr};
+    Button*             m_cancel            {nullptr};
     wxBoxSizer*         m_presets_sizer     {nullptr};
     wxStaticText*       m_label             {nullptr};
     wxBoxSizer*         m_radio_sizer       {nullptr};  
     ActionType          m_action            {UndefAction};
-    wxCheckBox*         m_template_filament_checkbox {nullptr};
 
     std::string         m_ph_printer_name;
     std::string         m_old_preset_name;
-    bool                m_use_for_rename{false};
-    wxString            m_info_line_extention{wxEmptyString};
-
-    PresetBundle*       m_preset_bundle{ nullptr };
 
 public:
+    SavePresetDialog(wxWindow *parent, Preset::Type type, std::string suffix = "");
+    SavePresetDialog(wxWindow* parent, std::vector<Preset::Type> types, std::string suffix = "");
+    ~SavePresetDialog();
 
-    const wxString& get_info_line_extention() { return m_info_line_extention; }
+    void AddItem(Preset::Type type, const std::string& suffix);
 
-    SavePresetDialog(wxWindow* parent, std::vector<Preset::Type> types, std::string suffix = "", bool template_filament = false, PresetBundle* preset_bundle = nullptr);
-    SavePresetDialog(wxWindow* parent, Preset::Type type, const wxString& info_line_extention);
-    ~SavePresetDialog() override;
-
-    void AddItem(Preset::Type type, const std::string& suffix, bool is_for_multiple_save);
-
-    PresetBundle*   get_preset_bundle() const { return m_preset_bundle; }
-    std::string     get_name();
-    std::string     get_name(Preset::Type type);
+    std::string get_name();
+    std::string get_name(Preset::Type type);
+    void input_name_from_other(std::string new_preset_name);
+    void confirm_from_other();
 
     bool enable_ok_btn() const;
     void add_info_for_edit_ph_printer(wxBoxSizer *sizer);
     void update_info_for_edit_ph_printer(const std::string &preset_name);
-    bool Layout() override;
-    bool is_for_rename() { return m_use_for_rename; }
+    void layout();
+    //BBS: add project embedded preset relate logic
+    bool get_save_to_project_selection(Preset::Type type);
 
-    bool get_template_filament_checkbox();
 protected:
     void on_dpi_changed(const wxRect& suggested_rect) override;
     void on_sys_color_changed() override {}
 
 private:
-    void build(std::vector<Preset::Type> types, std::string suffix = "", bool template_filament = false);
-    void update_physical_printers(const std::string& preset_name);
-    void accept();
+    void build(std::vector<Preset::Type> types, std::string suffix = "");
+    void on_select_cancel(wxCommandEvent &event);
+    void update_physical_printers(const std::string &preset_name);
+    void accept(wxCommandEvent &event);
 };
 
 } // namespace GUI

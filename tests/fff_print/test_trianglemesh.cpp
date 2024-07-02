@@ -22,7 +22,7 @@ static inline TriangleMesh make_cube() { return make_cube(20., 20, 20); }
 SCENARIO( "TriangleMesh: Basic mesh statistics") {
     GIVEN( "A 20mm cube, built from constexpr std::array" ) {
         std::vector<Vec3f> vertices { {20,20,0}, {20,0,0}, {0,0,0}, {0,20,0}, {20,20,20}, {0,20,20}, {0,0,20}, {20,0,20} };
-        std::vector<Vec3i> facets { {0,1,2}, {0,2,3}, {4,5,6}, {4,6,7}, {0,4,7}, {0,7,1}, {1,7,6}, {1,6,2}, {2,6,5}, {2,5,3}, {4,0,3}, {4,3,5} };
+        std::vector<Vec3i32> facets { {0,1,2}, {0,2,3}, {4,5,6}, {4,6,7}, {0,4,7}, {0,7,1}, {1,7,6}, {1,6,2}, {2,6,5}, {2,5,3}, {4,0,3}, {4,3,5} };
         TriangleMesh cube(vertices, facets);
         
         THEN( "Volume is appropriate for 20mm square cube.") {
@@ -155,7 +155,7 @@ SCENARIO( "TriangleMesh: slice behavior.") {
     }
     GIVEN( "A STL with an irregular shape.") {
         const std::vector<Vec3f> vertices {{0,0,0},{0,0,20},{0,5,0},{0,5,20},{50,0,0},{50,0,20},{15,5,0},{35,5,0},{15,20,0},{50,5,0},{35,20,0},{15,5,10},{50,5,20},{35,5,10},{35,20,10},{15,20,10}};
-        const std::vector<Vec3i> facets {{0,1,2},{2,1,3},{1,0,4},{5,1,4},{0,2,4},{4,2,6},{7,6,8},{4,6,7},{9,4,7},{7,8,10},{2,3,6},{11,3,12},{7,12,9},{13,12,7},{6,3,11},{11,12,13},{3,1,5},{12,3,5},{5,4,9},{12,5,9},{13,7,10},{14,13,10},{8,15,10},{10,15,14},{6,11,8},{8,11,15},{15,11,13},{14,15,13}};
+        const std::vector<Vec3i32> facets {{0,1,2},{2,1,3},{1,0,4},{5,1,4},{0,2,4},{4,2,6},{7,6,8},{4,6,7},{9,4,7},{7,8,10},{2,3,6},{11,3,12},{7,12,9},{13,12,7},{6,3,11},{11,12,13},{3,1,5},{12,3,5},{5,4,9},{12,5,9},{13,7,10},{14,13,10},{8,15,10},{10,15,14},{6,11,8},{8,11,15},{15,11,13},{14,15,13}};
 
 		auto cube = make_cube();
         WHEN(" a top tangent plane is sliced") {
@@ -220,16 +220,10 @@ SCENARIO( "make_xxx functions produce meshes.") {
     GIVEN("make_sphere() function") {
         WHEN("make_sphere() is called with arguments 10, PI / 3") {
             TriangleMesh sph = make_sphere(10, PI / 243.0);
-            THEN( "Edge length is smaller than limit but not smaller than half of it") {
-                double len = (sph.its.vertices[sph.its.indices[0][0]] - sph.its.vertices[sph.its.indices[0][1]]).norm();
-                double limit = 10*PI/243.;
-                REQUIRE(len <= limit);
-                REQUIRE(len >= limit/2.);
-            }
-            THEN( "Vertices are about the correct distance from the origin") {
-                bool all_vertices_ok = std::all_of(sph.its.vertices.begin(), sph.its.vertices.end(),
-                    [](const stl_vertex& pt) { return is_approx(pt.squaredNorm(), 100.f); });
-                REQUIRE(all_vertices_ok);
+            THEN("Resulting mesh has one point at 0,0,-10 and one at 0,0,10") {
+				const std::vector<stl_vertex> &verts = sph.its.vertices;
+                REQUIRE(std::count_if(verts.begin(), verts.end(), [](const Vec3f& t) { return is_approx(t, Vec3f(0.f, 0.f, 10.f)); } ) == 1);
+				REQUIRE(std::count_if(verts.begin(), verts.end(), [](const Vec3f& t) { return is_approx(t, Vec3f(0.f, 0.f, -10.f)); } ) == 1);
             }
             THEN( "The mesh volume is approximately 4/3 * pi * 10^3") {
                 REQUIRE(abs(sph.volume() - (4.0/3.0 * M_PI * std::pow(10,3))) < 1); // 1% tolerance?

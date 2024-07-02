@@ -13,27 +13,31 @@ class Plater;
 
 class FillBedJob : public Job
 {
-    int m_object_idx = -1;
+    int     m_object_idx = -1;
 
     using ArrangePolygon  = arrangement::ArrangePolygon;
     using ArrangePolygons = arrangement::ArrangePolygons;
 
     ArrangePolygons m_selected;
     ArrangePolygons m_unselected;
-    coord_t m_min_bed_inset = 0.;
+    //BBS: add partplate related logic
+    ArrangePolygons m_locked;;
 
-    arrangement::ArrangeBed m_bed;
+    Points m_bedpts;
+
+    arrangement::ArrangeParams params;
 
     int m_status_range = 0;
     Plater *m_plater;
 
 public:
+
     void prepare();
     void process(Ctl &ctl) override;
 
     FillBedJob();
 
-    int status_range() const /*override*/
+    int status_range() const
     {
         return m_status_range;
     }

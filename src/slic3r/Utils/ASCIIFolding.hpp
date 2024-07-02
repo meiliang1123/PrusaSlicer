@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2020 Lukáš Matěna @lukasmatena, Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_ASCIIFolding_hpp_
 #define slic3r_ASCIIFolding_hpp_
 
@@ -11,7 +7,7 @@ namespace Slic3r {
 
 // If possible, remove accents from accented latin characters.
 // This function is useful for generating file names to be processed by legacy firmwares.
-extern std::string 	fold_utf8_to_ascii(const std::string &src);
+extern std::string 	fold_utf8_to_ascii(const std::string &src,bool is_convert_for_filename=false);
 
 // Convert the input UNICODE character to a string of maximum 4 output ASCII characters.
 // Return the end of the string written to the output.

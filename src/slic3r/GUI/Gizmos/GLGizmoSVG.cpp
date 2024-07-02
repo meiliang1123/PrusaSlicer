@@ -2,7 +2,7 @@
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
-#include "slic3r/GUI/GUI_ObjectManipulation.hpp"
+#include "slic3r/GUI/Gizmos/GizmoObjectManipulation.hpp"
 #include "slic3r/GUI/MainFrame.hpp" // to update title when add text
 #include "slic3r/GUI/NotificationManager.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -23,6 +23,10 @@
 #include "libslic3r/ClipperUtils.hpp" // union_ex
 
 #include "imgui/imgui_stdlib.h" // using std::string for inputs
+#ifndef IMGUI_DEFINE_MATH_OPERATORS
+#define IMGUI_DEFINE_MATH_OPERATORS
+#endif
+#include <imgui/imgui_internal.h>
 #include "nanosvg/nanosvg.h"    // load SVG file
 
 #include <wx/display.h> // detection of change DPI
@@ -80,9 +84,9 @@ wxString last_used_directory = wxEmptyString;
 /// <returns>File path to svg</returns>
 std::string choose_svg_file();
 
-constexpr double get_tesselation_tolerance(double scale){ 
-    constexpr double tesselation_tolerance_in_mm = .1; //8e-2;
-    constexpr double tesselation_tolerance_scaled = (tesselation_tolerance_in_mm*tesselation_tolerance_in_mm) / SCALING_FACTOR / SCALING_FACTOR;
+double get_tesselation_tolerance(double scale){ 
+    double tesselation_tolerance_in_mm = .1; //8e-2;
+    double tesselation_tolerance_scaled = (tesselation_tolerance_in_mm*tesselation_tolerance_in_mm) / SCALING_FACTOR / SCALING_FACTOR;
     return tesselation_tolerance_scaled / scale / scale;
 }
 
@@ -118,32 +122,37 @@ std::string get_file_name(const std::string &file_path);
 /// <returns>Name for volume</returns>
 std::string volume_name(const EmbossShape& shape);
 
+/// <summary>
+/// Create input for volume creation
+/// </summary>
+/// <param name="canvas">parent of gizmo</param>
+/// <param name="raycaster">Keep scene</param>
+/// <param name="volume_type">Type of volume to be created</param>
+/// <returns>Params</returns>
+CreateVolumeParams create_input(GLCanvas3D &canvas, RaycastManager &raycaster, ModelVolumeType volume_type);
+
 enum class IconType : unsigned {
     reset_value,
-    reset_value_hover,
     refresh,
-    refresh_hover,
     change_file,
     bake,
-    bake_inactive,
     save,
     exclamation,
     lock,
-    lock_hover,
     unlock,
-    unlock_hover,
     reflection_x,
-    reflection_x_hover,
     reflection_y,
-    reflection_y_hover,
     // automatic calc of icon's count
     _count
 };
 // Do not forgot add loading of file in funtion:
 // IconManager::Icons init_icons(
 
-const IconManager::Icon &get_icon(const IconManager::Icons &icons, IconType type) { 
-    return *icons[static_cast<unsigned>(type)]; }
+// Define rendered version of icon
+enum class IconState : unsigned { activable = 0, hovered /*1*/, disabled /*2*/ };
+// selector for icon by enum
+const IconManager::Icon &get_icon(const IconManager::VIcons &icons, IconType type, IconState state) { 
+    return *icons[(unsigned) type][(unsigned) state]; }
 
 // This configs holds GUI layout size given by translated texts.
 // etc. When language changes, GUI is recreated and this class constructed again,
@@ -152,19 +161,17 @@ struct GuiCfg
 {
     // Detect invalid config values when change monitor DPI
     double screen_scale = -1.;
-    float  main_toolbar_height = -1.f;
+    bool   dark_mode = false;
 
     // Define bigger size(width or height)
     unsigned texture_max_size_px = 256;
-
-    // Zero means it is calculated in init function
-    ImVec2 window_size = ImVec2(0, 0);
-    ImVec2 window_size_for_object = ImVec2(0, 0); // without change type
 
     float input_width  = 0.f;
     float input_offset = 0.f;
 
     float icon_width   = 0.f;
+    
+    float max_tooltip_width = 0.f;
 
     // offset for checbox for lock up vector
     float lock_offset = 0.f;
@@ -189,38 +196,33 @@ struct GLGizmoSVG::GuiCfg: public ::GuiCfg{};
 
 bool GLGizmoSVG::create_volume(ModelVolumeType volume_type, const Vec2d &mouse_pos)
 {
-    CreateVolumeParams input = create_input(volume_type);
-    if (!input.data) return false; // Uninterpretable svg
-    return start_create_volume(input, mouse_pos);
+    CreateVolumeParams input = create_input(m_parent, m_raycast_manager, volume_type);
+    DataBasePtr base = create_emboss_data_base(m_job_cancel, volume_type);
+    if (!base) return false; // Uninterpretable svg
+    return start_create_volume(input, std::move(base), mouse_pos);
 }
 
 bool GLGizmoSVG::create_volume(ModelVolumeType volume_type) 
 {
-    CreateVolumeParams input = create_input(volume_type);
-    if (!input.data) return false; // Uninterpretable svg
-    return start_create_volume_without_position(input);
+    CreateVolumeParams input = create_input(m_parent, m_raycast_manager, volume_type);
+    DataBasePtr base = create_emboss_data_base(m_job_cancel,volume_type);
+    if (!base) return false; // Uninterpretable svg
+    return start_create_volume_without_position(input, std::move(base));
 }
 
 bool GLGizmoSVG::create_volume(std::string_view svg_file, ModelVolumeType volume_type){
-    CreateVolumeParams input = create_input(volume_type, svg_file);
-    if (!input.data) return false; // Uninterpretable svg
-    return start_create_volume_without_position(input);
+    CreateVolumeParams input = create_input(m_parent, m_raycast_manager, volume_type);
+    DataBasePtr base = create_emboss_data_base(m_job_cancel, volume_type, svg_file);
+    if (!base) return false; // Uninterpretable svg
+    return start_create_volume_without_position(input, std::move(base));
 }
 
 bool GLGizmoSVG::create_volume(std::string_view svg_file, const Vec2d &mouse_pos, ModelVolumeType volume_type)
 {
-    CreateVolumeParams input = create_input(volume_type, svg_file);
-    if (!input.data) return false; // Uninterpretable svg
-    return start_create_volume(input, mouse_pos);
-}
-
-CreateVolumeParams GLGizmoSVG::create_input(ModelVolumeType volume_type, std::string_view svg_filepath) {
-    DataBasePtr base = create_emboss_data_base(m_job_cancel, volume_type, svg_filepath);
-    auto gizmo = static_cast<unsigned char>(GLGizmosManager::Svg);
-    const GLVolume *gl_volume = get_first_hovered_gl_volume(m_parent);
-    Plater *plater = wxGetApp().plater();
-    return CreateVolumeParams{std::move(base), m_parent, plater->get_camera(), plater->build_volume(),
-        plater->get_ui_job_worker(), volume_type, m_raycast_manager, gizmo, gl_volume};
+    CreateVolumeParams input = create_input(m_parent, m_raycast_manager, volume_type);
+    DataBasePtr base = create_emboss_data_base(m_job_cancel, volume_type, svg_file);
+    if (!base) return false; // Uninterpretable svg
+    return start_create_volume(input, std::move(base), mouse_pos);
 }
 
 bool GLGizmoSVG::is_svg(const ModelVolume &volume) {
@@ -327,37 +329,6 @@ void GLGizmoSVG::volume_transformation_changed()
     calculate_scale();
 }
 
-void GLGizmoSVG::on_mouse_confirm_edit(const wxMouseEvent &mouse_event) {
-    // Fix phanthom transformation
-    //   appear when mouse click into scene during edit Rotation in input (click "Edit" button)
-    //   this must happen just before unselect selection (to find current volume)
-    static bool was_dragging = true;  
-    if ((mouse_event.LeftUp() || mouse_event.RightUp()) && 
-        m_parent.get_first_hover_volume_idx() < 0 &&
-        !was_dragging &&
-        m_volume != nullptr && 
-        m_volume->is_svg() ) { 
-        // current volume
-        const GLVolume *gl_volume_ptr = m_parent.get_selection().get_first_volume();
-        assert(gl_volume_ptr->geometry_id.first == m_volume->id().id);
-        if (gl_volume_ptr != nullptr) {
-            const Transform3d &v_tr = m_volume->get_matrix();
-            const Transform3d &gl_v_tr = gl_volume_ptr->get_volume_transformation().get_matrix();
-
-            const Matrix3d &v_rot = v_tr.linear();
-            const Matrix3d &gl_v_rot = gl_v_tr.linear();
-            const Vec3d &v_move = v_tr.translation();
-            const Vec3d &gl_v_move = gl_v_tr.translation();
-            if (!is_approx(v_rot, gl_v_rot)) {
-                m_parent.do_rotate(rotation_snapshot_name);
-            } else if (!is_approx(v_move, gl_v_move)) {
-                m_parent.do_move(move_snapshot_name);
-            }
-        }
-    }
-    was_dragging = mouse_event.Dragging();
-}
-
 bool GLGizmoSVG::on_mouse(const wxMouseEvent &mouse_event)
 {
     // not selected volume
@@ -367,7 +338,7 @@ bool GLGizmoSVG::on_mouse(const wxMouseEvent &mouse_event)
 
     if (on_mouse_for_rotation(mouse_event)) return true;
     if (on_mouse_for_translate(mouse_event)) return true;
-    on_mouse_confirm_edit(mouse_event);
+
     return false;
 }
 
@@ -414,38 +385,31 @@ void GLGizmoSVG::on_unregister_raycasters_for_picking(){
 }
 
 namespace{
-IconManager::Icons init_icons(IconManager &mng, const GuiCfg &cfg)
+IconManager::VIcons init_icons(IconManager &mng, const GuiCfg &cfg)
 { 
     mng.release();
     
     ImVec2 size(cfg.icon_width, cfg.icon_width);
     // icon order has to match the enum IconType
-    IconManager::InitTypes init_types{
-        {"undo.svg",         size, IconManager::RasterType::white_only_data}, // reset_value           
-        {"undo.svg",         size, IconManager::RasterType::color},           // reset_value_hover
-        {"refresh.svg",      size, IconManager::RasterType::white_only_data}, // refresh           
-        {"refresh.svg",      size, IconManager::RasterType::color},           // refresh_hovered
-        {"open.svg",         size, IconManager::RasterType::color},           // changhe_file
-        {"burn.svg",         size, IconManager::RasterType::color},           // bake
-        {"burn.svg",         size, IconManager::RasterType::gray_only_data},  // bake_inactive
-        {"save.svg",         size, IconManager::RasterType::color},           // save
-        {"exclamation.svg",  size, IconManager::RasterType::color},           // exclamation
-        {"lock_closed.svg",  size, IconManager::RasterType::white_only_data}, // lock
-        {"lock_open_f.svg",  size, IconManager::RasterType::white_only_data}, // lock_hovered
-        {"lock_open.svg",    size, IconManager::RasterType::white_only_data}, // unlock
-        {"lock_closed_f.svg",size, IconManager::RasterType::white_only_data}, // unlock_hovered
-        {"reflection_x.svg", size, IconManager::RasterType::white_only_data}, // reflection_x
-        {"reflection_x.svg", size, IconManager::RasterType::color},           // reflection_x_hovered
-        {"reflection_y.svg", size, IconManager::RasterType::white_only_data}, // reflection_y
-        {"reflection_y.svg", size, IconManager::RasterType::color},           // reflection_y_hovered
+    std::vector<std::string> filenames{
+        "undo.svg",          // reset_value           
+        "refresh.svg",       // refresh           
+        "open.svg",          // changhe_file
+        "burn.svg",          // bake
+        "save.svg",          // save
+        "obj_warning.svg",   // exclamation // ORCA: use obj_warning instead exclamation. exclamation is not compatible with low res
+        "lock_closed.svg",   // lock
+        "lock_open.svg",     // unlock
+        "reflection_x.svg",  // reflection_x
+        "reflection_y.svg",  // reflection_y
     };
 
-    assert(init_types.size() == static_cast<size_t>(IconType::_count));
-    std::string path = resources_dir() + "/icons/";
-    for (IconManager::InitType &init_type : init_types)
-        init_type.filepath = path + init_type.filepath;
+    assert(filenames.size() == static_cast<size_t>(IconType::_count));
+    std::string path = resources_dir() + "/images/";
+    for (std::string &filename : filenames) filename = path + filename;
 
-    return mng.init(init_types);
+    auto type = IconManager::RasterType::color_wite_gray;
+    return mng.init(filenames, size, type);
 
     //IconManager::VIcons vicons = mng.init(init_types);
     //
@@ -456,10 +420,14 @@ IconManager::Icons init_icons(IconManager &mng, const GuiCfg &cfg)
     //    icons.push_back(i.front());
     //return icons;
 }
-
-bool reset_button(const IconManager::Icons &icons)
+bool draw_clickable(const IconManager::VIcons &icons, IconType type)
 {
-    float reset_offset = ImGui::GetStyle().FramePadding.x;
+    return clickable(get_icon(icons, type, IconState::activable), get_icon(icons, type, IconState::hovered));
+}
+
+bool reset_button(const IconManager::VIcons &icons)
+{
+    float reset_offset = ImGui::GetStyle().WindowPadding.x;
     ImGui::SameLine(reset_offset);
 
     // from GLGizmoCut
@@ -468,7 +436,7 @@ bool reset_button(const IconManager::Icons &icons)
     //btn_label += ImGui::RevertButton;
     //return ImGui::Button((btn_label + "##" + label_id).c_str());
 
-    return clickable(get_icon(icons, IconType::reset_value), get_icon(icons, IconType::reset_value_hover));
+    return draw_clickable(icons, IconType::reset_value);
 }
 
 } // namespace 
@@ -477,30 +445,29 @@ void GLGizmoSVG::on_render_input_window(float x, float y, float bottom_limit)
 {
     set_volume_by_selection();
 
-    // Configuration creation
     double screen_scale = wxDisplay(wxGetApp().plater()).GetScaleFactor();
-    float  main_toolbar_height = m_parent.get_main_toolbar_height();
+
+    // Orca
+    ImGuiWrapper::push_toolbar_style(m_parent.get_scale());
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0, 5.0) * screen_scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 4.0f * screen_scale);
+
+    // Configuration creation
     if (m_gui_cfg == nullptr || // Exist configuration - first run
         m_gui_cfg->screen_scale != screen_scale || // change of DPI
-        m_gui_cfg->main_toolbar_height != main_toolbar_height // change size of view port
+        m_gui_cfg->dark_mode != m_is_dark_mode // change of dark mode
         ) {
         // Create cache for gui offsets
         ::GuiCfg cfg = create_gui_configuration();
         cfg.screen_scale = screen_scale;
-        cfg.main_toolbar_height = main_toolbar_height;
+        cfg.dark_mode    = m_is_dark_mode;
 
         GuiCfg gui_cfg{std::move(cfg)};
         m_gui_cfg = std::make_unique<const GuiCfg>(std::move(gui_cfg));
 
-        // set position near toolbar
-        m_set_window_offset = ImVec2(-1.f, -1.f);
-
         m_icons = init_icons(m_icon_manager, *m_gui_cfg); // need regeneration when change resolution(move between monitors)
     }
 
-    const ImVec2 &window_size = m_volume->is_the_only_one_part() ? 
-        m_gui_cfg->window_size_for_object : m_gui_cfg->window_size;        
-    ImGui::SetNextWindowSize(window_size);
     // Draw origin position of text during dragging
     if (m_surface_drag.has_value()) {
         ImVec2 mouse_pos = ImGui::GetMousePos();
@@ -513,27 +480,34 @@ void GLGizmoSVG::on_render_input_window(float x, float y, float bottom_limit)
                 ImVec4(1.f, .3f, .3f, .75f)
         ); // Warning color
         const float radius = 16.f;
-        ImGuiPureWrap::draw_cross_hair(center, radius, color);
+        ImGuiWrapper::draw_cross_hair(center, radius, color);
+    }
+    
+    static float last_y = 0.0f;
+    static float last_h = 0.0f;
+
+    // adjust window position to avoid overlap the view toolbar
+    const float win_h = ImGui::GetWindowHeight();
+    y = std::min(y, bottom_limit - win_h);
+    GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
+    if (last_h != win_h || last_y != y) {
+        // ask canvas for another frame to render the window in the correct position
+        m_imgui->set_requires_extra_frame();
+        if (last_h != win_h)
+            last_h = win_h;
+        if (last_y != y)
+            last_y = y;
     }
 
-    // check if is set window offset
-    if (m_set_window_offset.has_value()) {
-        if (m_set_window_offset->y < 0)
-            // position near toolbar
-            m_set_window_offset = ImVec2(x, std::min(y, bottom_limit - window_size.y));
-        
-        ImGui::SetNextWindowPos(*m_set_window_offset, ImGuiCond_Always);
-        m_set_window_offset.reset();
-    } 
+    GizmoImguiBegin(on_get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
-    bool is_opened = true;
-    constexpr ImGuiWindowFlags flag = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize;
-    if (ImGui::Begin(on_get_name().c_str(), &is_opened, flag))
-        draw_window();
+    draw_window();
 
-    ImGui::End();
-    if (!is_opened)
-        close();
+    GizmoImguiEnd();
+
+    // Orca
+    ImGui::PopStyleVar(2);
+    ImGuiWrapper::pop_toolbar_style();
 }
 
 void GLGizmoSVG::on_set_state()
@@ -550,9 +524,6 @@ void GLGizmoSVG::on_set_state()
     } else if (GLGizmoBase::m_state == GLGizmoBase::On) {
         // Try(when exist) set text configuration by volume 
         set_volume_by_selection();
-           
-        m_set_window_offset = (m_gui_cfg != nullptr) ?
-            ImGuiPureWrap::change_window_position(on_get_name().c_str(), false) : ImVec2(-1, -1);
     }
 }
 
@@ -1194,7 +1165,7 @@ void GLGizmoSVG::set_volume_by_selection()
     // Do not use focused input value when switch volume(it must swith value)
     if (m_volume != nullptr && 
         m_volume != volume) // when update volume it changed id BUT not pointer
-        ImGuiPureWrap::left_inputs();
+        ImGuiWrapper::left_inputs();
 
     // is valid svg volume?
     if (!is_svg(*volume)) 
@@ -1464,11 +1435,11 @@ void GLGizmoSVG::draw_filename(){
             // TRN - Preview of filename after clear local filepath.
             m_filename_preview = _u8L("Unknown filename");
         
-        m_filename_preview = ImGuiPureWrap::trunc(m_filename_preview, m_gui_cfg->input_width);
+        m_filename_preview = ImGuiWrapper::trunc(m_filename_preview, m_gui_cfg->input_width);
     }
 
     if (!m_shape_warnings.empty()){
-        draw(get_icon(m_icons, IconType::exclamation));
+        draw(get_icon(m_icons, IconType::exclamation, IconState::hovered));
         if (ImGui::IsItemHovered()) {
             std::string tooltip;
             for (const std::string &w: m_shape_warnings){
@@ -1478,23 +1449,24 @@ void GLGizmoSVG::draw_filename(){
                     tooltip += "\n";
                 tooltip += w;
             }
-            ImGui::SetTooltip("%s", tooltip.c_str());
+            m_imgui->tooltip(tooltip, m_gui_cfg->max_tooltip_width);
         }
         ImGui::SameLine();
     }
 
     // Remove space between filename and gray suffix ".svg"
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+    ImGui::AlignTextToFramePadding();
     ImGui::Text("%s", m_filename_preview.c_str());
     bool is_hovered = ImGui::IsItemHovered();
     ImGui::SameLine();
-    ImGuiPureWrap::text_colored(ImGuiPureWrap::COL_GREY_LIGHT, ".svg");
+    m_imgui->text_colored(ImGuiWrapper::COL_GREY_LIGHT, ".svg");
     ImGui::PopStyleVar(); // ImGuiStyleVar_ItemSpacing 
 
     is_hovered |= ImGui::IsItemHovered();
     if (is_hovered) {
         std::string tooltip = GUI::format(_L("SVG file path is \"%1%\""), svg.path);
-        ImGui::SetTooltip("%s", tooltip.c_str());
+        m_imgui->tooltip(tooltip, m_gui_cfg->max_tooltip_width);
     }
 
     bool file_changed = false;
@@ -1503,22 +1475,25 @@ void GLGizmoSVG::draw_filename(){
     bool can_reload = !m_volume_shape.svg_file->path.empty();
     if (can_reload) {
         ImGui::SameLine();
-        if (clickable(get_icon(m_icons, IconType::refresh), get_icon(m_icons, IconType::refresh_hover))) {
+        if (draw_clickable(m_icons, IconType::refresh)) {
             if (!boost::filesystem::exists(m_volume_shape.svg_file->path)) {
                 m_volume_shape.svg_file->path.clear();
             } else {
                 file_changed = true;
             }
         } else if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", _u8L("Reload SVG file from disk.").c_str());
+            m_imgui->tooltip(_u8L("Reload SVG file from disk."), m_gui_cfg->max_tooltip_width);
     }
 
+    std::string tooltip = "";
     ImGuiComboFlags flags = ImGuiComboFlags_PopupAlignLeft | ImGuiComboFlags_NoPreview;
     ImGui::SameLine();
+    ImGuiWrapper::push_combo_style(m_parent.get_scale());
     if (ImGui::BeginCombo("##file_options", nullptr, flags)) {
         ScopeGuard combo_sg([]() { ImGui::EndCombo(); });
 
-        draw(get_icon(m_icons, IconType::change_file));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {ImGui::GetStyle().FramePadding.x, 0});
+        draw(get_icon(m_icons, IconType::change_file, IconState::hovered));
         ImGui::SameLine();
         if (ImGui::Selectable((_L("Change file") + dots).ToUTF8().data())) {
             std::string new_path = choose_svg_file();
@@ -1529,16 +1504,16 @@ void GLGizmoSVG::draw_filename(){
                 m_volume_shape.svg_file = svg_file_new; // clear data
             }
         } else if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("%s", _u8L("Change to another .svg file").c_str());
+            tooltip = _u8L("Change to another .svg file");
         }
 
         std::string forget_path = _u8L("Forget the file path");
         if (m_volume->emboss_shape->svg_file->path.empty()){
-            draw(get_icon(m_icons, IconType::bake_inactive));
+            draw(get_icon(m_icons, IconType::bake, IconState::disabled));
             ImGui::SameLine();
-            ImGuiPureWrap::text_colored(ImGuiPureWrap::COL_GREY_DARK, forget_path.c_str());
+            m_imgui->text_colored(ImGuiWrapper::COL_GREY_DARK, forget_path.c_str());
         } else {
-            draw(get_icon(m_icons, IconType::bake));
+            draw(get_icon(m_icons, IconType::bake, IconState::hovered));
             ImGui::SameLine();
             if (ImGui::Selectable(forget_path.c_str())) {
                 // set .svg_file.path_in_3mf to remember file name
@@ -1546,8 +1521,8 @@ void GLGizmoSVG::draw_filename(){
                 m_volume_shape.svg_file->path.clear();
                 m_filename_preview.clear();
             } else if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s", _u8L("Do NOT save local path to 3MF file.\n"
-                                             "Also disables 'reload from disk' option.").c_str());
+                tooltip = _u8L("Do NOT save local path to 3MF file.\n"
+                               "Also disables 'reload from disk' option.");
             }
         }
         
@@ -1569,7 +1544,7 @@ void GLGizmoSVG::draw_filename(){
         //    ImGui::SetTooltip("%s", _u8L("Use only paths from svg - recreate svg").c_str());
         //}
                 
-        draw(get_icon(m_icons, IconType::bake));
+        draw(get_icon(m_icons, IconType::bake, IconState::hovered));
         ImGui::SameLine();
         // TRN: An menu option to convert the SVG into an unmodifiable model part.
         if (ImGui::Selectable(_u8L("Bake").c_str())) {
@@ -1577,10 +1552,10 @@ void GLGizmoSVG::draw_filename(){
             close();
         } else if (ImGui::IsItemHovered()) {
             // TRN: Tooltip for the menu item.
-            ImGui::SetTooltip("%s", _u8L("Bake into model as uneditable part").c_str());
+            tooltip = _u8L("Bake into model as uneditable part");
         }
 
-        draw(get_icon(m_icons, IconType::save));
+        draw(get_icon(m_icons, IconType::save, IconState::activable));
         ImGui::SameLine();
         if (ImGui::Selectable((_L("Save as") + dots).ToUTF8().data())) {
             wxWindow *parent = nullptr;
@@ -1611,7 +1586,7 @@ void GLGizmoSVG::draw_filename(){
 
             }
         } else if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("%s", _u8L("Save as '.svg' file").c_str());
+            tooltip = _u8L("Save as '.svg' file");
         }
 
         //draw(get_icon(m_icons, IconType::save));
@@ -1632,7 +1607,11 @@ void GLGizmoSVG::draw_filename(){
         //} else if (ImGui::IsItemHovered()) {
         //    ImGui::SetTooltip("%s", _u8L("Save only used path as '.svg' file").c_str());
         //}
+        ImGui::PopStyleVar(1);
     }
+    ImGuiWrapper::pop_combo_style();
+    if (!tooltip.empty())
+        m_imgui->tooltip(tooltip, m_gui_cfg->max_tooltip_width);
 
     if (file_changed) {
         float scale = get_scale_for_tolerance();
@@ -1649,7 +1628,8 @@ void GLGizmoSVG::draw_filename(){
 
 void GLGizmoSVG::draw_depth()
 {
-    ImGuiPureWrap::text(m_gui_cfg->translations.depth);
+    ImGui::AlignTextToFramePadding();
+    ImGuiWrapper::text(m_gui_cfg->translations.depth);
     ImGui::SameLine(m_gui_cfg->input_offset);
     ImGui::SetNextItemWidth(m_gui_cfg->input_width);
 
@@ -1663,8 +1643,8 @@ void GLGizmoSVG::draw_depth()
     if (use_inch) {
         size_format = "%.2f in";
         // input in inches
-        input *= ObjectManipulation::mm_to_in * m_scale_depth.value_or(1.f);
-        result_scale = ObjectManipulation::in_to_mm / m_scale_depth.value_or(1.f);
+        input *= GizmoObjectManipulation::mm_to_in * m_scale_depth.value_or(1.f);
+        result_scale = GizmoObjectManipulation::in_to_mm / m_scale_depth.value_or(1.f);
     } else if (m_scale_depth.has_value()) {
         // scale input
         input *= (*m_scale_depth);
@@ -1680,27 +1660,28 @@ void GLGizmoSVG::draw_depth()
             process();
         }
     } else if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", _u8L("Size in emboss direction.").c_str());
+        m_imgui->tooltip(_u8L("Size in emboss direction."), m_gui_cfg->max_tooltip_width);
 }
 
 void GLGizmoSVG::draw_size() 
 {
-    ImGuiPureWrap::text(m_gui_cfg->translations.size);
+    ImGui::AlignTextToFramePadding();
+    ImGuiWrapper::text(m_gui_cfg->translations.size);
     if (ImGui::IsItemHovered()){
         size_t count_points = 0;
         for (const auto &s : m_volume_shape.shapes_with_ids)
             count_points += Slic3r::count_points(s.expoly);
         // TRN: The placeholder contains a number.
-        ImGui::SetTooltip("%s", GUI::format(_L("Scale also changes amount of curve samples (%1%)"), count_points).c_str());
+        m_imgui->tooltip(GUI::format(_L("Scale also changes amount of curve samples (%1%)"), count_points), m_gui_cfg->max_tooltip_width);
     }
 
     bool use_inch = wxGetApp().app_config->get_bool("use_inches");
     
     Point size = m_shape_bb.size();
     double width = size.x() * m_volume_shape.scale * m_scale_width.value_or(1.f);
-    if (use_inch) width *= ObjectManipulation::mm_to_in;    
+    if (use_inch) width *= GizmoObjectManipulation::mm_to_in;    
     double height = size.y() * m_volume_shape.scale * m_scale_height.value_or(1.f);
-    if (use_inch) height *= ObjectManipulation::mm_to_in;
+    if (use_inch) height *= GizmoObjectManipulation::mm_to_in;
 
     const auto is_valid_scale_ratio = [limit = &limits.relative_scale_ratio](double ratio) {
         if (std::fabs(ratio - 1.) < limit->min)
@@ -1761,7 +1742,7 @@ void GLGizmoSVG::draw_size()
             }
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", _u8L("Width of SVG.").c_str());
+            m_imgui->tooltip(_u8L("Width of SVG."), m_gui_cfg->max_tooltip_width);
 
         ImGui::SameLine(second_offset);
         ImGui::SetNextItemWidth(input_width);
@@ -1775,17 +1756,17 @@ void GLGizmoSVG::draw_size()
             }
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", _u8L("Height of SVG.").c_str());
+            m_imgui->tooltip(_u8L("Height of SVG."), m_gui_cfg->max_tooltip_width);
     }
 
     // Lock on ratio m_keep_ratio
     ImGui::SameLine(m_gui_cfg->lock_offset);
-    const IconManager::Icon &icon       = get_icon(m_icons, m_keep_ratio ? IconType::lock : IconType::unlock);
-    const IconManager::Icon &icon_hover = get_icon(m_icons, m_keep_ratio ? IconType::lock_hover : IconType::unlock_hover);
+    const IconManager::Icon &icon       = get_icon(m_icons, m_keep_ratio ? IconType::lock : IconType::unlock, IconState::activable);
+    const IconManager::Icon &icon_hover = get_icon(m_icons, m_keep_ratio ? IconType::lock : IconType::unlock, IconState::hovered);
     if (button(icon, icon_hover, icon))
         m_keep_ratio = !m_keep_ratio;    
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", _u8L("Lock/unlock the aspect ratio of the SVG.").c_str());
+        m_imgui->tooltip(_u8L("Lock/unlock the aspect ratio of the SVG."), m_gui_cfg->max_tooltip_width);
     
 
     // reset button
@@ -1795,7 +1776,7 @@ void GLGizmoSVG::draw_size()
             new_relative_scale = Vec3d(1./m_scale_width.value_or(1.f), 1./m_scale_height.value_or(1.f), 1.);
             make_snap = true;
         } else if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", _u8L("Reset scale").c_str());
+            m_imgui->tooltip(_u8L("Reset scale"), m_gui_cfg->max_tooltip_width);
     }
 
     if (new_relative_scale.has_value()){
@@ -1835,10 +1816,11 @@ void GLGizmoSVG::draw_use_surface()
     m_imgui->disabled_begin(!can_use_surface);
     ScopeGuard sc([imgui = m_imgui]() { imgui->disabled_end(); });
 
-    ImGuiPureWrap::text(m_gui_cfg->translations.use_surface);
+    ImGui::AlignTextToFramePadding();
+    ImGuiWrapper::text(m_gui_cfg->translations.use_surface);
     ImGui::SameLine(m_gui_cfg->input_offset);
 
-    if (ImGui::Checkbox("##useSurface", &m_volume_shape.projection.use_surface))
+    if (m_imgui->bbl_checkbox("##useSurface", m_volume_shape.projection.use_surface))
         process();
 }
 
@@ -1855,7 +1837,8 @@ void GLGizmoSVG::draw_distance()
     m_imgui->disabled_begin(!allowe_surface_distance);
     ScopeGuard sg([imgui = m_imgui]() { imgui->disabled_end(); });
 
-    ImGuiPureWrap::text(m_gui_cfg->translations.distance);
+    ImGui::AlignTextToFramePadding();
+    ImGuiWrapper::text(m_gui_cfg->translations.distance);
     ImGui::SameLine(m_gui_cfg->input_offset);
     ImGui::SetNextItemWidth(m_gui_cfg->input_width);
 
@@ -1864,12 +1847,12 @@ void GLGizmoSVG::draw_distance()
     bool is_moved = false;
     if (use_inch) {
         std::optional<float> distance_inch;
-        if (m_distance.has_value()) distance_inch = (*m_distance * ObjectManipulation::mm_to_in);
-        min_distance = static_cast<float>(min_distance * ObjectManipulation::mm_to_in);
-        max_distance = static_cast<float>(max_distance * ObjectManipulation::mm_to_in);
+        if (m_distance.has_value()) distance_inch = (*m_distance * GizmoObjectManipulation::mm_to_in);
+        min_distance = static_cast<float>(min_distance * GizmoObjectManipulation::mm_to_in);
+        max_distance = static_cast<float>(max_distance * GizmoObjectManipulation::mm_to_in);
         if (m_imgui->slider_optional_float("##distance", m_distance, min_distance, max_distance, "%.3f in", 1.f, false, move_tooltip)) {
             if (distance_inch.has_value()) {
-                m_distance = *distance_inch * ObjectManipulation::in_to_mm;
+                m_distance = *distance_inch * GizmoObjectManipulation::in_to_mm;
             } else {
                 m_distance.reset();
             }
@@ -1886,7 +1869,7 @@ void GLGizmoSVG::draw_distance()
             m_distance.reset();
             is_reseted = true;
         } else if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", _u8L("Reset distance").c_str());
+            m_imgui->tooltip(_u8L("Reset distance"), m_gui_cfg->max_tooltip_width);
     }
 
     if (is_moved || is_reseted)
@@ -1896,8 +1879,9 @@ void GLGizmoSVG::draw_distance()
 }
 
 void GLGizmoSVG::draw_rotation()
-{        
-    ImGuiPureWrap::text(m_gui_cfg->translations.rotation);
+{
+    ImGui::AlignTextToFramePadding();
+    ImGuiWrapper::text(m_gui_cfg->translations.rotation);
     ImGui::SameLine(m_gui_cfg->input_offset);
     ImGui::SetNextItemWidth(m_gui_cfg->input_width);
 
@@ -1938,7 +1922,7 @@ void GLGizmoSVG::draw_rotation()
 
             is_reseted = true;
         } else if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", _u8L("Reset rotation").c_str());
+            m_imgui->tooltip(_u8L("Reset rotation"), m_gui_cfg->max_tooltip_width);
     }
 
     // Apply rotation on model (backend)
@@ -1948,31 +1932,32 @@ void GLGizmoSVG::draw_rotation()
     // Keep up - lock button icon
     if (!m_volume->is_the_only_one_part()) {
         ImGui::SameLine(m_gui_cfg->lock_offset);
-        const IconManager::Icon &icon = get_icon(m_icons,m_keep_up ? IconType::lock : IconType::unlock);
-        const IconManager::Icon &icon_hover = get_icon(m_icons, m_keep_up ? IconType::lock_hover : IconType::unlock_hover);
+        const IconManager::Icon &icon       = get_icon(m_icons, m_keep_up ? IconType::lock : IconType::unlock, IconState::activable);
+        const IconManager::Icon &icon_hover = get_icon(m_icons, m_keep_up ? IconType::lock : IconType::unlock, IconState::hovered);
         if (button(icon, icon_hover, icon))
             m_keep_up = !m_keep_up;    
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", _u8L("Lock/unlock rotation angle when dragging above the surface.").c_str());
+            m_imgui->tooltip(_u8L("Lock/unlock rotation angle when dragging above the surface."), m_gui_cfg->max_tooltip_width);
     }
 }
 
 void GLGizmoSVG::draw_mirroring()
 {
+    ImGui::AlignTextToFramePadding();
     ImGui::Text("%s", m_gui_cfg->translations.mirror.c_str());
     ImGui::SameLine(m_gui_cfg->input_offset);
     Axis axis = Axis::UNKNOWN_AXIS;
-    if(clickable(get_icon(m_icons, IconType::reflection_x), get_icon(m_icons, IconType::reflection_x_hover))){
+    if (draw_clickable(m_icons, IconType::reflection_x)) {
         axis = Axis::X;
     } else if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", _u8L("Mirror vertically").c_str());
+        m_imgui->tooltip(_u8L("Mirror vertically"), m_gui_cfg->max_tooltip_width);
     }
 
     ImGui::SameLine();
-    if (clickable(get_icon(m_icons, IconType::reflection_y), get_icon(m_icons, IconType::reflection_y_hover))) {
+    if (draw_clickable(m_icons, IconType::reflection_y)) {
         axis = Axis::Y;
     } else if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", _u8L("Mirror horizontally").c_str());
+        m_imgui->tooltip(_u8L("Mirror horizontally"), m_gui_cfg->max_tooltip_width);
     }
 
     if (axis != Axis::UNKNOWN_AXIS){
@@ -1999,11 +1984,12 @@ void GLGizmoSVG::draw_mirroring()
 
 void GLGizmoSVG::draw_model_type()
 {
+    ImGui::AlignTextToFramePadding();
     bool is_last_solid_part = m_volume->is_the_only_one_part();
     std::string title = _u8L("Operation");
     if (is_last_solid_part) {
         ImVec4 color{.5f, .5f, .5f, 1.f};
-        ImGuiPureWrap::text_colored(color, title.c_str());
+        m_imgui->text_colored(color, title.c_str());
     } else {
         ImGui::Text("%s", title.c_str());
     }
@@ -2015,10 +2001,11 @@ void GLGizmoSVG::draw_model_type()
     ModelVolumeType type = m_volume->type();
 
     //TRN EmbossOperation
+    ImGuiWrapper::push_radio_style();
     if (ImGui::RadioButton(_u8L("Join").c_str(), type == part))
         new_type = part;
     else if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", _u8L("Click to change text into object part.").c_str());
+        m_imgui->tooltip(_u8L("Click to change text into object part."), m_gui_cfg->max_tooltip_width);
     ImGui::SameLine();
 
     std::string last_solid_part_hint = _u8L("You can't change a type of the last solid part of the object.");
@@ -2026,9 +2013,9 @@ void GLGizmoSVG::draw_model_type()
         new_type = negative;
     else if (ImGui::IsItemHovered()) {
         if (is_last_solid_part)
-            ImGui::SetTooltip("%s", last_solid_part_hint.c_str());
+            m_imgui->tooltip(last_solid_part_hint, m_gui_cfg->max_tooltip_width);
         else if (type != negative)
-            ImGui::SetTooltip("%s", _u8L("Click to change part type into negative volume.").c_str());
+            m_imgui->tooltip(_u8L("Click to change part type into negative volume."), m_gui_cfg->max_tooltip_width);
     }
 
     // In simple mode are not modifiers
@@ -2038,17 +2025,18 @@ void GLGizmoSVG::draw_model_type()
             new_type = modifier;
         else if (ImGui::IsItemHovered()) {
             if (is_last_solid_part)
-                ImGui::SetTooltip("%s", last_solid_part_hint.c_str());
+                m_imgui->tooltip(last_solid_part_hint, m_gui_cfg->max_tooltip_width);
             else if (type != modifier)
-                ImGui::SetTooltip("%s", _u8L("Click to change part type into modifier.").c_str());
+                m_imgui->tooltip(_u8L("Click to change part type into modifier."), m_gui_cfg->max_tooltip_width);
         }
     }
+    ImGuiWrapper::pop_radio_style();
 
     if (m_volume != nullptr && new_type.has_value() && !is_last_solid_part) {
         GUI_App &app    = wxGetApp();
         Plater * plater = app.plater();
         // TRN: This is the name of the action that shows in undo/redo stack (changing part type from SVG to something else).
-        Plater::TakeSnapshot snapshot(plater, _L("Change SVG Type"), UndoRedo::SnapshotType::GizmoAction);
+        Plater::TakeSnapshot snapshot(plater, _u8L("Change SVG Type"), UndoRedo::SnapshotType::GizmoAction);
         m_volume->set_type(*new_type);
 
         bool is_volume_move_inside  = (type == part);
@@ -2113,6 +2101,15 @@ std::string volume_name(const EmbossShape &shape)
     return "SVG shape";
 }
 
+CreateVolumeParams create_input(GLCanvas3D &canvas, RaycastManager& raycaster, ModelVolumeType volume_type)
+{
+    auto gizmo = static_cast<unsigned char>(GLGizmosManager::Svg);
+    const GLVolume *gl_volume = get_first_hovered_gl_volume(canvas);
+    Plater *plater = wxGetApp().plater();
+    return CreateVolumeParams{canvas, plater->get_camera(), plater->build_volume(),
+        plater->get_ui_job_worker(), volume_type, raycaster, gizmo, gl_volume};
+}
+
 GuiCfg create_gui_configuration() {
     GuiCfg cfg; // initialize by default values;
 
@@ -2156,23 +2153,8 @@ GuiCfg create_gui_configuration() {
     cfg.input_width = letter_m_size.x * count_letter_M_in_input;
     cfg.texture_max_size_px = std::round((cfg.input_width + cfg.input_offset + cfg.icon_width + space)/8) * 8;
 
-     // calculate window size
-    float window_input_width = cfg.input_offset + cfg.input_width + style.WindowPadding.x + space;
-    float window_image_width = cfg.texture_max_size_px + 2*style.WindowPadding.x;
+    cfg.max_tooltip_width = ImGui::GetFontSize() * 20.0f;
 
-    float window_title     = line_height + 2 * style.FramePadding.y + 2 * style.WindowTitleAlign.y;
-    float input_height     = line_height_with_spacing + 2 * style.FramePadding.y;
-    float separator_height = 2 + style.FramePadding.y;
-    float window_height = 
-        window_title + // window title
-        cfg.texture_max_size_px + 2 * style.FramePadding.y +  // preview (-- not sure with padding -> fix retina height)
-        line_height_with_spacing + // filename
-        separator_height + // separator - orange line
-        input_height * 7 + // depth + size + use_surface + FromSurface + Rotation + Mirror + FaceTheCamera
-        2 * style.WindowPadding.y;
-    cfg.window_size_for_object = ImVec2(std::max(window_input_width, window_image_width), window_height);
-    float change_type_height = separator_height + line_height_with_spacing + input_height;
-    cfg.window_size = ImVec2(cfg.window_size_for_object.x, cfg.window_size_for_object.y + change_type_height);
     return cfg;
 }
 

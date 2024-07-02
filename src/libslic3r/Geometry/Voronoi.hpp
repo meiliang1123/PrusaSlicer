@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2021 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Geometry_Voronoi_hpp_
 #define slic3r_Geometry_Voronoi_hpp_
 
@@ -48,8 +44,7 @@ public:
         MISSING_VORONOI_VERTEX,
         NON_PLANAR_VORONOI_DIAGRAM,
         VORONOI_EDGE_INTERSECTING_INPUT_SEGMENT,
-        PARABOLIC_VORONOI_EDGE_WITHOUT_FOCUS_POINT,
-        UNKNOWN                                     // Repairs are disabled in the constructor.
+        UNKNOWN                                  // Repairs are disabled in the constructor.
     };
 
     enum class State {
@@ -163,10 +158,7 @@ private:
         IssueType>::type
     detect_known_voronoi_cell_issues(const VoronoiDiagram &voronoi_diagram, SegmentIterator segment_begin, SegmentIterator segment_end);
 
-    // Detect issues related to Voronoi edges, or that can be detected by iterating over Voronoi edges.
-    // The first type of issue that can be detected is a finite Voronoi edge with a non-finite vertex.
-    // The second type of issue that can be detected is a parabolic Voronoi edge without a focus point (produced by two segments).
-    static IssueType detect_known_voronoi_edge_issues(const VoronoiDiagram &voronoi_diagram);
+    static bool has_finite_edge_with_non_finite_vertex(const VoronoiDiagram &voronoi_diagram);
 
     voronoi_diagram_type  m_voronoi_diagram;
     vertex_container_type m_vertices;

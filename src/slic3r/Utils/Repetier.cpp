@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2020 - 2023 Oleksandra Iushchenko @YuSanka, David Kocík @kocikdav, Lukáš Matěna @lukasmatena, Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "Repetier.hpp"
 
 #include <algorithm>
@@ -77,7 +73,7 @@ bool Repetier::test(wxString &msg) const
             res = false;
             msg = format_error(body, error, status);
         })
-        .on_complete([&](std::string body, unsigned) {
+        .on_complete([&, this](std::string body, unsigned) {
             BOOST_LOG_TRIVIAL(debug) << boost::format("%1%: Got version: %2%") % name % body;
 
             try {
@@ -89,7 +85,7 @@ bool Repetier::test(wxString &msg) const
                 const auto soft = ptree.get_optional<std::string>("software");
                 res = validate_repetier(text, soft);
                 if (! res) {
-                    msg = GUI::format_wxstr(_L("Mismatched type of print host: %s"), (soft ? *soft : (text ? *text : "Repetier")));
+                    msg = GUI::from_u8((boost::format(_utf8(L("Mismatched type of print host: %s"))) % (soft ? *soft : (text ? *text : "Repetier"))).str());
                 }
             }
             catch (const std::exception &) {
@@ -109,10 +105,10 @@ wxString Repetier::get_test_ok_msg () const
 
 wxString Repetier::get_test_failed_msg (wxString &msg) const
 {
-        return GUI::format_wxstr("%s: %s\n\n%s"
-        , _L("Could not connect to Repetier")
-        , msg
-        , _L("Note: Repetier version at least 0.90.0 is required."));
+        return GUI::from_u8((boost::format("%s: %s\n\n%s")
+        % _utf8(L("Could not connect to Repetier"))
+        % std::string(msg.ToUTF8())
+        % _utf8(L("Note: Repetier version at least 0.90.0 is required."))).str());
 }
 
 bool Repetier::upload(PrintHostUpload upload_data, ProgressFn prorgess_fn, ErrorFn error_fn, InfoFn info_fn) const
@@ -146,7 +142,7 @@ bool Repetier::upload(PrintHostUpload upload_data, ProgressFn prorgess_fn, Error
     auto http = Http::post(std::move(url));
     set_auth(http);
 
-    if (! upload_data.group.empty() && upload_data.group != _u8L("Default")) {
+    if (! upload_data.group.empty() && upload_data.group != _utf8(L("Default"))) {
         http.form_add("group", upload_data.group);
     }
 
@@ -227,7 +223,7 @@ bool Repetier::get_groups(wxArrayString& groups) const
 
                 BOOST_FOREACH(boost::property_tree::ptree::value_type &v, ptree.get_child("groupNames.")) {
                     if (v.second.data() == "#") {
-                        groups.push_back(_L("Default"));
+                        groups.push_back(_utf8(L("Default")));
                     } else {
                         // Is it safe to assume that the data are utf-8 encoded?
                         groups.push_back(GUI::from_u8(v.second.data()));

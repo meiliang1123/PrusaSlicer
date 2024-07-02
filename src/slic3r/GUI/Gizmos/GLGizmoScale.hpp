@@ -6,34 +6,41 @@
 #define slic3r_GLGizmoScale_hpp_
 
 #include "GLGizmoBase.hpp"
+//BBS: add size adjust related
+#include "GizmoObjectManipulation.hpp"
+
+#include "libslic3r/BoundingBox.hpp"
+
 
 namespace Slic3r {
 namespace GUI {
 
-class Selection;
-
 class GLGizmoScale3D : public GLGizmoBase
 {
-    static const double Offset;
+    static const float Offset;
 
     struct StartingData
     {
-        bool ctrl_down{ false };
-        Vec3d scale{ Vec3d::Ones() };
-        Vec3d drag_position{ Vec3d::Zero() };
-        Vec3d center{ Vec3d::Zero() };
-        Vec3d instance_center{ Vec3d::Zero() };
-        Vec3d constraint_position{ Vec3d::Zero() };
+        Vec3d scale;
+        Vec3d drag_position;
+        Vec3d plane_center;  // keep the relative center position for scale in the bottom plane
+        Vec3d plane_nromal;  // keep the bottom plane 
         BoundingBoxf3 box;
+        Vec3d pivots[6];
+        bool ctrl_down;
+
+        StartingData() : scale(Vec3d::Ones()), drag_position(Vec3d::Zero()), ctrl_down(false) { for (int i = 0; i < 5; ++i) { pivots[i] = Vec3d::Zero(); } }
     };
 
-    BoundingBoxf3 m_bounding_box;
-    Transform3d m_grabbers_transform;
-    Vec3d m_center{ Vec3d::Zero() };
-    Vec3d m_instance_center{ Vec3d::Zero() };
+    BoundingBoxf3 m_box;
+    Transform3d m_transform;
     Vec3d m_scale{ Vec3d::Ones() };
     double m_snap_step{ 0.05 };
     StartingData m_starting;
+
+    ColorRGBA m_base_color;
+    ColorRGBA m_drag_color;
+    ColorRGBA m_highlight_color;
 
     struct GrabberConnection
     {
@@ -44,11 +51,13 @@ class GLGizmoScale3D : public GLGizmoBase
     };
     std::array<GrabberConnection, 7> m_grabber_connections;
 
-    ColorRGBA m_base_color;
-    ColorRGBA m_drag_color;
-    ColorRGBA m_highlight_color;
+    //BBS: add size adjust related
+    GizmoObjectManipulation* m_object_manipulation;
+
 public:
-    GLGizmoScale3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id);
+    //BBS: add obj manipulation logic
+    //GLGizmoScale3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id);
+    GLGizmoScale3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id, GizmoObjectManipulation* obj_manipulation);
 
     double get_snap_step(double step) const { return m_snap_step; }
     void set_snap_step(double step) { m_snap_step = step; }
@@ -77,6 +86,8 @@ protected:
     virtual void on_render() override;
     virtual void on_register_raycasters_for_picking() override;
     virtual void on_unregister_raycasters_for_picking() override;
+    //BBS: GUI refactor: add object manipulation
+    virtual void on_render_input_window(float x, float y, float bottom_limit);
 
 private:
     void render_grabbers_connection(unsigned int id_1, unsigned int id_2, const ColorRGBA& color);

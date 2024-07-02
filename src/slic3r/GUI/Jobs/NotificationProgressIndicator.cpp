@@ -9,6 +9,16 @@ namespace Slic3r { namespace GUI {
 
 NotificationProgressIndicator::NotificationProgressIndicator(NotificationManager *nm): m_nm{nm} {}
 
+void NotificationProgressIndicator::clear_percent()
+{
+
+}
+
+void NotificationProgressIndicator::show_error_info(wxString msg, int code, wxString description, wxString extra)
+{
+
+}
+
 void NotificationProgressIndicator::set_range(int range)
 {
     m_nm->progress_indicator_set_range(range);

@@ -9,10 +9,16 @@
 #include "slic3r/GUI/GLToolbar.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoBase.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmosCommon.hpp"
+//BBS: GUI refactor: add object manipulation
+#include "slic3r/GUI/Gizmos/GizmoObjectManipulation.hpp"
 
 #include "libslic3r/ObjectID.hpp"
 
+#include <wx/timer.h>
 #include <map>
+
+//BBS: GUI refactor: to support top layout
+#define BBS_TOOLBAR_ON_TOP 1
 
 namespace Slic3r {
 
@@ -26,7 +32,8 @@ class GLCanvas3D;
 class ClippingPlane;
 enum class SLAGizmoEventType : unsigned char;
 class CommonGizmosDataPool;
-
+//BBS: GUI refactor: add object manipulation
+class GizmoObjectManipulation;
 class Rect
 {
     float m_left{ 0.0f };
@@ -72,20 +79,23 @@ public:
     {
         // Order must match index in m_gizmos!
         Move,
-        Scale,
         Rotate,
+        Scale,
         Flatten,
         Cut,
-        Hollow,
-        SlaSupports,
+        MeshBoolean,
         FdmSupports,
         Seam,
         MmuSegmentation,
-        Measure,
         Emboss,
         Svg,
+        Measure,
         Simplify,
-        Undefined
+        //SlaSupports,
+        // BBS
+        //FaceRecognition,
+        //Hollow,
+        Undefined,
     };
 
 private:
@@ -93,17 +103,20 @@ private:
     {
         float scale{ 1.0f };
         float icons_size{ Default_Icons_Size };
-        float border{ 5.0f };
-        float gap_x{ 15.0f };
-        float gap_y{ 15.0f };
+        float border{ 4.0f };
+        float gap_y{ 4.0f };
+        //BBS: GUI refactor: to support top layout
+        float gap_x{ 4.0f };
+        float stride_x() const { return icons_size + gap_x;}
+        float scaled_gap_x() const { return scale * gap_x; }
+        float scaled_stride_x() const { return scale * stride_x(); }
 
         float stride_y() const { return icons_size + gap_y;}
 
-        float scaled_icons_size()   const { return int(scale * icons_size); }
-        float scaled_border()       const { return int(scale * border); }
-        float scaled_gap_x()        const { return int(scale * gap_x); }
-        float scaled_gap_y()        const { return int(scale * gap_y); }
-        float scaled_stride_y()     const { return scaled_icons_size() + scaled_gap_y(); }
+        float scaled_icons_size() const { return scale * icons_size; }
+        float scaled_border() const { return scale * border; }
+        float scaled_gap_y() const { return scale * gap_y; }
+        float scaled_stride_y() const { return scale * stride_y(); }
     };
 
     GLCanvas3D& m_parent;
@@ -118,6 +131,9 @@ private:
     EType m_hover;
     std::pair<EType, bool> m_highlight; // bool true = higlightedShown, false = highlightedHidden
 
+    //BBS: GUI refactor: add object manipulation
+    GizmoObjectManipulation m_object_manipulation;
+
     std::vector<size_t> get_selectable_idxs() const;
     EType get_gizmo_from_mouse(const Vec2d &mouse_pos) const;
 
@@ -126,6 +142,15 @@ private:
     std::string m_tooltip;
     bool m_serializing;
     std::unique_ptr<CommonGizmosDataPool> m_common_gizmos_data;
+
+    //When there are more than 9 colors, shortcut key coloring
+    wxTimer m_timer_set_color;
+    void on_set_color_timer(wxTimerEvent& evt);
+
+    // key MENU_ICON_NAME, value = ImtextureID
+    std::map<int, void*> icon_list;
+
+    bool m_is_dark = false;
 
     /// <summary>
     /// Process mouse event on gizmo toolbar
@@ -136,9 +161,25 @@ private:
     /// On false, event should be process by others.</returns>
     bool gizmos_toolbar_on_mouse(const wxMouseEvent &mouse_event);
 public:
+
+    std::unique_ptr<AssembleViewDataPool> m_assemble_view_data;
+    enum MENU_ICON_NAME {
+        IC_TOOLBAR_RESET            = 0,
+        IC_TOOLBAR_RESET_HOVER,
+        IC_TOOLBAR_TOOLTIP,
+        IC_TOOLBAR_TOOLTIP_HOVER,
+        IC_NAME_COUNT,
+    };
+
     explicit GLGizmosManager(GLCanvas3D& parent);
 
+    void switch_gizmos_icon_filename();
+
     bool init();
+
+    bool init_icon_textures();
+
+    float get_layout_scale();
 
     bool init_arrow(const std::string& filename);
 
@@ -180,6 +221,7 @@ public:
     bool is_enabled() const { return m_enabled; }
     void set_enabled(bool enable) { m_enabled = enable; }
 
+    void set_icon_dirty() { m_icons_texture_dirty = true; }
     void set_overlay_icon_size(float size);
     void set_overlay_scale(float scale);
 
@@ -195,10 +237,11 @@ public:
     /// Should be called when selection changed
     /// </summary>
     void update_data();
+    void update_assemble_view_data();
 
     EType get_current_type() const { return m_current; }
     GLGizmoBase* get_current() const;
-    GLGizmoBase* get_gizmo(GLGizmosManager::EType type) const;
+    GLGizmoBase *get_gizmo(GLGizmosManager::EType type) const;
     EType get_gizmo_from_name(const std::string& gizmo_name) const;
 
     bool is_running() const;
@@ -206,14 +249,31 @@ public:
 
     bool is_dragging() const;
 
+    //BBS
+    void* get_icon_texture_id(MENU_ICON_NAME icon) {
+        if (icon_list.find((int)icon) != icon_list.end())
+            return icon_list[icon];
+        else
+            return nullptr;
+    }
+    void* get_icon_texture_id(MENU_ICON_NAME icon) const{
+        if (icon_list.find((int)icon) != icon_list.end())
+            return icon_list.at(icon);
+        else
+            return nullptr;
+    }
+
     ClippingPlane get_clipping_plane() const;
+    ClippingPlane get_assemble_view_clipping_plane() const;
     bool wants_reslice_supports_on_undo() const;
 
     bool is_in_editing_mode(bool error_notification = false) const;
     bool is_hiding_instances() const;
 
+    void on_change_color_mode(bool is_dark);
     void render_current_gizmo() const;
     void render_painter_gizmo();
+    void render_painter_assemble_view() const;
 
     void render_overlay();
 
@@ -233,8 +293,12 @@ public:
     // To end highlight set gizmo = undefined
     void set_highlight(EType gizmo, bool highlight_shown) { m_highlight = std::pair<EType, bool>(gizmo, highlight_shown); }
     bool get_highlight_state() const { return m_highlight.second; }
+
+    //BBS: GUI refactor: GLToolbar adjust
     float get_scaled_total_height() const;
     float get_scaled_total_width() const;
+    GizmoObjectManipulation& get_object_manipulation() { return m_object_manipulation; }
+    bool get_uniform_scaling() const { return m_object_manipulation.get_uniform_scaling();}
 
 private:
     bool gizmo_event(SLAGizmoEventType action,
@@ -244,15 +308,16 @@ private:
                      bool              control_down   = false);
     
     void render_background(float left, float top, float right, float bottom, float border_w, float border_h) const;
-
+    
     void do_render_overlay() const;
+
     bool generate_icons_texture();
 
     void update_hover_state(const EType &type);
     bool grabber_contains_mouse() const;
 };
 
-
+std::string get_name_from_gizmo_etype(GLGizmosManager::EType type);
 
 } // namespace GUI
 } // namespace Slic3r

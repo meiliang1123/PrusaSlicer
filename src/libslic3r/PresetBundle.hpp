@@ -15,6 +15,22 @@
 #include <array>
 #include <boost/filesystem/path.hpp>
 
+#define DEFAULT_USER_FOLDER_NAME "default"
+#define BUNDLE_STRUCTURE_JSON_NAME "bundle_structure.json"
+
+#define VALIDATE_PRESETS_SUCCESS                0
+#define VALIDATE_PRESETS_PRINTER_NOT_FOUND      1
+#define VALIDATE_PRESETS_FILAMENTS_NOT_FOUND    2
+#define VALIDATE_PRESETS_MODIFIED_GCODES        3
+
+
+// define an enum class of vendor type
+enum class VendorType {
+    Unknown = 0,
+    Klipper,
+    Marlin,
+    Marlin_BBL
+};
 namespace Slic3r {
 
 // Bundle of Print + Filament + Printer presets.
@@ -30,7 +46,7 @@ public:
     void            reset(bool delete_files);
 
     void            setup_directories();
-    void            import_newer_configs(const std::string& from);
+    void            copy_files(const std::string& from);
 
     struct PresetPreferences {
         std::string printer_model_id;// name of a preferred printer model
@@ -45,8 +61,78 @@ public:
     PresetsConfigSubstitutions load_presets(AppConfig &config, ForwardCompatibilitySubstitutionRule rule,
                                             const PresetPreferences& preferred_selection = PresetPreferences());
 
+    // Load selections (current print, current filaments, current printer) from config.ini
+    // This is done just once on application start up.
+    //BBS: change it to public
+    void     load_selections(AppConfig &config, const PresetPreferences& preferred_selection = PresetPreferences());
+
+    // BBS Load user presets
+    PresetsConfigSubstitutions load_user_presets(std::string user, ForwardCompatibilitySubstitutionRule rule);
+    PresetsConfigSubstitutions load_user_presets(AppConfig &config, std::map<std::string, std::map<std::string, std::string>>& my_presets, ForwardCompatibilitySubstitutionRule rule);
+    PresetsConfigSubstitutions import_presets(std::vector<std::string> &files, std::function<int(std::string const &)> override_confirm, ForwardCompatibilitySubstitutionRule rule);
+    bool                       import_json_presets(PresetsConfigSubstitutions &            substitutions,
+                                                   std::string &                           file,
+                                                   std::function<int(std::string const &)> override_confirm,
+                                                   ForwardCompatibilitySubstitutionRule    rule,
+                                                   int &                                   overwrite,
+                                                   std::vector<std::string> &              result);
+    void save_user_presets(AppConfig& config, std::vector<std::string>& need_to_delete_list);
+    void remove_users_preset(AppConfig &config, std::map<std::string, std::map<std::string, std::string>> * my_presets = nullptr);
+    void update_user_presets_directory(const std::string preset_folder);
+    void remove_user_presets_directory(const std::string preset_folder);
+    void update_system_preset_setting_ids(std::map<std::string, std::map<std::string, std::string>>& system_presets);
+
+    //BBS: add API to get previous machine
+    int validate_presets(const std::string &file_name, DynamicPrintConfig& config, std::set<std::string>& different_gcodes);
+
+    //BBS: add function to generate differed preset for save
+    //the pointer should be freed by the caller
+    Preset* get_preset_differed_for_save(Preset& preset);
+    int get_differed_values_to_update(Preset& preset, std::map<std::string, std::string>& key_values);
+
+    //BBS: get vendor's current version
+    Semver get_vendor_profile_version(std::string vendor_name);
+
+    // Orca: get vendor type
+    VendorType get_current_vendor_type();
+    // Vendor related handy functions
+    bool is_bbl_vendor() { return get_current_vendor_type() == VendorType::Marlin_BBL; }
+    bool use_bbl_network();
+
+    //BBS: project embedded preset logic
+    PresetsConfigSubstitutions load_project_embedded_presets(std::vector<Preset*> project_presets, ForwardCompatibilitySubstitutionRule substitution_rule);
+    std::vector<Preset*> get_current_project_embedded_presets();
+    void reset_project_embedded_presets();
+
+    //BBS: find printer model
+    std::string get_texture_for_printer_model(std::string model_name);
+    std::string get_stl_model_for_printer_model(std::string model_name);
+    std::string get_hotend_model_for_printer_model(std::string model_name);
+
     // Export selections (current print, current filaments, current printer) into config.ini
     void            export_selections(AppConfig &config);
+
+    // BBS
+    void            set_num_filaments(unsigned int n, std::string new_col = "");
+    unsigned int sync_ams_list(unsigned int & unknowns);
+    //BBS: check whether this is the only edited filament
+    bool is_the_only_edited_filament(unsigned int filament_index);
+
+    // Orca: update selected filament and print
+    void           update_selections(AppConfig &config);
+    void set_calibrate_printer(std::string name);
+
+    void set_is_validation_mode(bool mode) { validation_mode = mode; }
+    void set_vendor_to_validate(std::string vendor) { vendor_to_validate = vendor; }
+
+    std::set<std::string> get_printer_names_by_printer_type_and_nozzle(const std::string &printer_type, std::string nozzle_diameter_str);
+    bool                  check_filament_temp_equation_by_printer_type_and_nozzle_for_mas_tray(const std::string &printer_type,
+                                                                                               std::string &      nozzle_diameter_str,
+                                                                                               std::string &      setting_id,
+                                                                                               std::string &      tag_uid,
+                                                                                               std::string &      nozzle_temp_min,
+                                                                                               std::string &      nozzle_temp_max,
+                                                                                               std::string &      preset_setting_id);
 
     PresetCollection            prints;
     PresetCollection            sla_prints;
@@ -56,45 +142,22 @@ public:
 	const PresetCollection& 	materials(PrinterTechnology pt) const { return pt == ptFFF ? this->filaments : this->sla_materials; }
     PrinterPresetCollection     printers;
     PhysicalPrinterCollection   physical_printers;
-
-    // Filament presets per extruder for a multi-extruder or multi-material print.
-    // extruders_filaments.size() should be the same as printers.get_edited_preset().config.nozzle_diameter.size()
-    std::vector<ExtruderFilaments> extruders_filaments;
-    void cache_extruder_filaments_names();
-    void reset_extruder_filaments();
-
-    // Another hideous function related to current ExtruderFilaments hack. Returns a vector of values
-    // of a given config option for all currently used filaments. Modified value is returned for modified preset.
-    // Must be called with the vector ConfigOption type, e.g. ConfigOptionPercents.
-    template <class T>
-    auto get_config_options_for_current_filaments(const t_config_option_key& key)
-    {
-        decltype(T::values) out;
-        const Preset& edited_preset = this->filaments.get_edited_preset();
-        for (const ExtruderFilaments& extr_filament : this->extruders_filaments) {
-            const Preset& selected_preset = *extr_filament.get_selected_preset();
-            const Preset& preset = edited_preset.name == selected_preset.name ? edited_preset : selected_preset;
-            const T* co = preset.config.opt<T>(key);
-            if (co) {
-                assert(co->values.size() == 1);
-                out.push_back(co->values.back());
-            } else {
-                // Key is missing or type mismatch.
-            }
-        }
-        return out;
-    }
-
-
-
-    PresetCollection&           get_presets(Preset::Type preset_type);
+    // Filament preset names for a multi-extruder or multi-material print.
+    // extruders.size() should be the same as printers.get_edited_preset().config.nozzle_diameter.size()
+    std::vector<std::string>    filament_presets;
+    // BBS: ams
+    std::map<int, DynamicPrintConfig> filament_ams_list;
+    std::vector<std::vector<std::string>> ams_multi_color_filment;
+    // Calibrate
+    Preset const * calibrate_printer = nullptr;
+    std::set<Preset const *> calibrate_filaments;
 
     // The project configuration values are kept separated from the print/filament/printer preset,
-    // they are being serialized / deserialized from / to the .amf, .3mf, .config, .gcode, 
+    // they are being serialized / deserialized from / to the .amf, .3mf, .config, .gcode,
     // and they are being used by slicing core.
     DynamicPrintConfig          project_config;
 
-    // There will be an entry for each system profile loaded, 
+    // There will be an entry for each system profile loaded,
     // and the system profiles will point to the VendorProfile instances owned by PresetBundle::vendors.
     VendorMap                   vendors;
 
@@ -107,24 +170,22 @@ public:
     };
     ObsoletePresets             obsolete_presets;
 
-    std::set<std::string>       tmp_installed_presets;
-
-    bool                        has_defauls_only() const 
+    bool                        has_defauls_only() const
         { return prints.has_defaults_only() && filaments.has_defaults_only() && printers.has_defaults_only(); }
 
     DynamicPrintConfig          full_config() const;
-    // full_config() with the "printhost_apikey" and "printhost_cafile" removed.
+    // full_config() with the some "useless" config removed.
     DynamicPrintConfig          full_config_secure() const;
 
     // Load user configuration and store it into the user profiles.
     // This method is called by the configuration wizard.
-    void                        load_config_from_wizard(const std::string &name, DynamicPrintConfig config)
-        { this->load_config_file_config(name, false, std::move(config)); }
+    void                        load_config_from_wizard(const std::string &name, DynamicPrintConfig config, Semver file_version, bool is_custom_defined = false)
+        { this->load_config_file_config(name, false, std::move(config), file_version, true, is_custom_defined); }
 
     // Load configuration that comes from a model file containing configuration, such as 3MF et al.
     // This method is called by the Plater.
-    void                        load_config_model(const std::string &name, DynamicPrintConfig config)
-        { this->load_config_file_config(name, true, std::move(config)); }
+    void                        load_config_model(const std::string &name, DynamicPrintConfig config, Semver file_version = Semver())
+        { this->load_config_file_config(name, true, std::move(config), file_version); }
 
     // Load an external config file containing the print, filament and printer presets.
     // Instead of a config file, a G-code may be loaded containing the full set of parameters.
@@ -137,7 +198,7 @@ public:
     // Load settings into the provided settings instance.
     // Activate the presets stored in the config bundle.
     // Returns the number of presets loaded successfully.
-    enum LoadConfigBundleAttribute { 
+    enum LoadConfigBundleAttribute {
         // Save the profiles, which have been loaded.
         SaveImported,
         // Delete all old config profiles before loading.
@@ -145,28 +206,36 @@ public:
         // Load a system config bundle.
         LoadSystem,
         LoadVendorOnly,
+        LoadFilamentOnly,
     };
     using LoadConfigBundleAttributes = enum_bitmask<LoadConfigBundleAttribute>;
     // Load the config bundle based on the flags.
     // Don't do any config substitutions when loading a system profile, perform and report substitutions otherwise.
-    std::pair<PresetsConfigSubstitutions, size_t> load_configbundle(
-        const std::string &path, LoadConfigBundleAttributes flags, ForwardCompatibilitySubstitutionRule compatibility_rule);
+    /*std::pair<PresetsConfigSubstitutions, size_t> load_configbundle(
+        const std::string &path, LoadConfigBundleAttributes flags, ForwardCompatibilitySubstitutionRule compatibility_rule);*/
+    //BBS: add json related logic
+    std::pair<PresetsConfigSubstitutions, size_t> load_vendor_configs_from_json(
+        const std::string &path, const std::string &vendor_name, LoadConfigBundleAttributes flags, ForwardCompatibilitySubstitutionRule compatibility_rule);
 
     // Export a config bundle file containing all the presets and the names of the active presets.
-    void                        export_configbundle(const std::string &path, bool export_system_settings = false, bool export_physical_printers = false, std::function<bool(const std::string&, const std::string&, std::string&)> secret_callback = nullptr);
+    //void                        export_configbundle(const std::string &path, bool export_system_settings = false, bool export_physical_printers = false);
+    //BBS: add a function to export current configbundle as default
+    //void export_current_configbundle(const std::string &path);
+    //BBS: add a function to export system presets for cloud-slicer
+    //void export_system_configs(const std::string &path);
+    std::vector<std::string> export_current_configs(const std::string &path, std::function<int(std::string const &)> override_confirm,
+        bool include_modify, bool export_system_settings = false);
 
     // Enable / disable the "- default -" preset.
     void                        set_default_suppressed(bool default_suppressed);
 
-    // Set the filament preset name. As the name could come from the UI selection box, 
+    // Set the filament preset name. As the name could come from the UI selection box,
     // an optional "(modified)" suffix will be removed from the filament name.
     void                        set_filament_preset(size_t idx, const std::string &name);
 
     // Read out the number of extruders from an active printer preset,
     // update size and content of filament_presets.
     void                        update_multi_material_filament_presets();
-
-    void                        update_filaments_compatible(PresetSelectCompatibleType select_other_filament_if_incompatible, int extruder_idx = -1);
 
     // Update the is_compatible flag of all print and filament presets depending on whether they are marked
     // as compatible with the currently selected printer (and print in case of filament presets).
@@ -181,18 +250,23 @@ public:
     // If the "vendor" section is missing, enable all models and variants of the particular vendor.
     void                        load_installed_printers(const AppConfig &config);
 
-    const std::string&          get_preset_name_by_alias(const Preset::Type& preset_type, const std::string& alias, int extruder_id = -1);
-    const std::string&          get_preset_name_by_alias_invisible(const Preset::Type& preset_type, const std::string& alias) const;
+    const std::string&          get_preset_name_by_alias(const Preset::Type& preset_type, const std::string& alias) const;
 
+    const int                   get_required_hrc_by_filament_type(const std::string& filament_type) const;
     // Save current preset of a provided type under a new name. If the name is different from the old one,
     // Unselected option would be reverted to the beginning values
-    void                        save_changes_for_preset(const std::string& new_name, Preset::Type type, const std::vector<std::string>& unselected_options);
-    // Transfer options form preset_from_name preset to preset_to_name preset and save preset_to_name preset as new new_name preset
-    // Return false, if new preset wasn't saved
-    bool                        transfer_and_save(Preset::Type type, const std::string& preset_from_name, const std::string& preset_to_name,
-                                                  const std::string& new_name, const std::vector<std::string>& options);
+    //BBS: add project embedded preset logic
+    void                        save_changes_for_preset(const std::string& new_name, Preset::Type type, const std::vector<std::string>& unselected_options, bool save_to_project = false);
 
-    static const char *PRUSA_BUNDLE;
+    std::pair<PresetsConfigSubstitutions, std::string> load_system_models_from_json(ForwardCompatibilitySubstitutionRule compatibility_rule);
+    std::pair<PresetsConfigSubstitutions, std::string> load_system_filaments_json(ForwardCompatibilitySubstitutionRule compatibility_rule);
+    VendorProfile                                      get_custom_vendor_models() const;
+
+    //BBS: add BBL as default
+    static const char *BBL_BUNDLE;
+	static const char *BBL_DEFAULT_PRINTER_MODEL;
+	static const char *BBL_DEFAULT_PRINTER_VARIANT;
+	static const char *BBL_DEFAULT_FILAMENT;
 
     static std::array<Preset::Type, 3>  types_list(PrinterTechnology pt) {
         if (pt == ptFFF)
@@ -200,40 +274,46 @@ public:
         return      { Preset::TYPE_PRINTER, Preset::TYPE_SLA_PRINT, Preset::TYPE_SLA_MATERIAL };
     }
 
+    // Orca: for validation only
+    bool has_errors() const
+    {
+        if (m_errors != 0 || printers.m_errors != 0 || filaments.m_errors != 0 || prints.m_errors != 0)
+            return true;
+        return false;
+    }
+
 private:
-    std::pair<PresetsConfigSubstitutions, std::string> load_system_presets(ForwardCompatibilitySubstitutionRule compatibility_rule);
+    //std::pair<PresetsConfigSubstitutions, std::string> load_system_presets(ForwardCompatibilitySubstitutionRule compatibility_rule);
+    //BBS: add json related logic
+    std::pair<PresetsConfigSubstitutions, std::string> load_system_presets_from_json(ForwardCompatibilitySubstitutionRule compatibility_rule);
     // Merge one vendor's presets with the other vendor's presets, report duplicates.
     std::vector<std::string>    merge_presets(PresetBundle &&other);
     // Update renamed_from and alias maps of system profiles.
     void 						update_system_maps();
-    // Update alias maps
-    void 						update_alias_maps();
 
     // Set the is_visible flag for filaments and sla materials,
     // apply defaults based on enabled printers when no filaments/materials are installed.
     void                        load_installed_filaments(AppConfig &config);
     void                        load_installed_sla_materials(AppConfig &config);
 
-    // Load selections (current print, current filaments, current printer) from config.ini
-    // This is done just once on application start up.
-    void                        load_selections(AppConfig &config, const PresetPreferences& preferred_selection = PresetPreferences());
-
     // Load print, filament & printer presets from a config. If it is an external config, then the name is extracted from the external path.
     // and the external config is just referenced, not stored into user profile directory.
     // If it is not an external config, then the config will be stored into the user profile directory.
-    void                        load_config_file_config(const std::string &name_or_path, bool is_external, DynamicPrintConfig &&config);
-    ConfigSubstitutions         load_config_file_config_bundle(
-        const std::string &path, const boost::property_tree::ptree &tree, ForwardCompatibilitySubstitutionRule compatibility_rule);
+    void                        load_config_file_config(const std::string &name_or_path, bool is_external, DynamicPrintConfig &&config, Semver file_version = Semver(), bool selected = false, bool is_custom_defined = false);
+    /*ConfigSubstitutions         load_config_file_config_bundle(
+        const std::string &path, const boost::property_tree::ptree &tree, ForwardCompatibilitySubstitutionRule compatibility_rule);*/
 
     DynamicPrintConfig          full_fff_config() const;
     DynamicPrintConfig          full_sla_config() const;
+
+    // Orca: used for validation only
+    bool validation_mode = false;
+    std::string vendor_to_validate = ""; 
+    int m_errors = 0;
+
 };
 
 ENABLE_ENUM_BITMASK_OPERATORS(PresetBundle::LoadConfigBundleAttribute)
-
-// Copies bed texture and model files to 'data_dir()\printer' folder, if needed
-// and updates the config accordingly
-extern void copy_bed_model_and_texture_if_needed(DynamicPrintConfig& config);
 
 } // namespace Slic3r
 

@@ -1,8 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2023 Lukáš Matěna @lukasmatena, Tomáš Mészáros @tamasmeszaros, Filip Sykala @Jony01, Vojtěch Bubník @bubnikv, Enrico Turri @enricoturri1966, David Kocík @kocikdav, Oleksandra Iushchenko @YuSanka, Vojtěch Král @vojtechkral
-///|/ Copyright (c) 2019 John Drake @foxox
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_GUI_BackgroundSlicingProcess_hpp_
 #define slic3r_GUI_BackgroundSlicingProcess_hpp_
 
@@ -16,9 +11,10 @@
 
 #include "libslic3r/PrintBase.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
+#include "libslic3r/Format/SL1.hpp"
 #include "slic3r/Utils/PrintHost.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
-
+#include "PartPlate.hpp"
 
 namespace boost { namespace filesystem { class path; } }
 
@@ -64,14 +60,15 @@ public:
 	void 		rethrow_exception() const { assert(this->error()); assert(m_exception); std::rethrow_exception(m_exception); }
 	// Produce a human readable message to be displayed by a notification or a message box.
 	// 2nd parameter defines whether the output should be displayed with a monospace font.
-	std::pair<std::string, bool> format_error_message() const;
+    std::pair<std::string, std::vector<size_t>> format_error_message() const;
 
 private:
 	StatusType 			m_status;
 	std::exception_ptr 	m_exception;
 };
 
-wxDEFINE_EVENT(EVT_SLICING_UPDATE, SlicingStatusEvent);
+//BBS: move it to plater.hpp
+//wxDEFINE_EVENT(EVT_SLICING_UPDATE, SlicingStatusEvent);
 
 // Print step IDs for keeping track of the print state.
 enum BackgroundSlicingProcessStep {
@@ -88,9 +85,16 @@ public:
 	~BackgroundSlicingProcess();
 
 	void set_fff_print(Print *print) { m_fff_print = print; }
-    void set_sla_print(SLAPrint *print) { m_sla_print = print; }
+    void set_sla_print(SLAPrint *print) { m_sla_print = print; m_sla_print->set_printer(&m_sla_archive); }
 	void set_thumbnail_cb(ThumbnailsGeneratorCallback cb) { m_thumbnail_cb = cb; }
 	void set_gcode_result(GCodeProcessorResult* result) { m_gcode_result = result; }
+
+	//BBS: add partplate related logic
+	bool switch_print_preprocess();
+	bool can_switch_print();
+	void set_current_plate(GUI::PartPlate* plate) { m_current_plate = plate; }
+	GUI::PartPlate* get_current_plate() { return m_current_plate; }
+	GCodeProcessorResult* get_current_gcode_result() { return m_gcode_result;}
 
 	// The following wxCommandEvent will be sent to the UI thread / Plater window, when the slicing is finished
 	// and the background processing will transition into G-code export.
@@ -104,6 +108,9 @@ public:
 	// The wxCommandEvent is sent to the UI thread asynchronously without waiting for the event to be processed.
 	void set_export_began_event(int event_id) { m_event_export_began_id = event_id; }
 
+	// BBS
+	void set_export_finished_event(int event_id) { m_event_export_finished_id = event_id; }
+
 	// Activate either m_fff_print or m_sla_print.
 	// Return true if changed.
 	bool select_technology(PrinterTechnology tech);
@@ -113,6 +120,7 @@ public:
 	// Get the current print. It is either m_fff_print or m_sla_print.
 	const PrintBase*    current_print() const { return m_print; }
 	const Print* 		fff_print() const { return m_fff_print; }
+	Print* 				fff_print() { return m_fff_print; }
 	const SLAPrint* 	sla_print() const { return m_sla_print; }
     // Take the project path (if provided), extract the name of the project, run it through the macro processor and save it next to the project file.
     // If the project_path is empty, just run output_filepath().
@@ -137,10 +145,10 @@ public:
 	bool 		empty() const;
 	// Validate the print. Returns an empty string if valid, returns an error message if invalid.
 	// Call validate before calling start().
-    std::string validate(std::vector<std::string>* warnings = nullptr);
+    StringObjectException validate(StringObjectException *warning = nullptr, Polygons* collison_polygons = nullptr, std::vector<std::pair<Polygon, float>>* height_polygons = nullptr);
 
 	// Set the export path of the G-code.
-	// Once the path is set, the G-code 
+	// Once the path is set, the G-code
 	void schedule_export(const std::string &path, bool export_path_on_removable_media);
 	// Set print host upload job data to be enqueued to the PrintHostJobQueue
 	// after current print slicing is complete
@@ -174,8 +182,15 @@ public:
     // The "finished" flag is reset by the apply() method, if it changes the state of the print.
     // This "finished" flag does not account for the final export of the output file (.gcode or zipped PNGs),
     // and it does not account for the OctoPrint scheduling.
-    bool    finished() const { return m_print->finished(); }
-    
+    //BBS: improve the finished logic, also judge the m_gcode_result
+    //bool    finished() const { return m_print->finished(); }
+    bool    finished() const { return m_print->finished() && !m_gcode_result->moves.empty(); }
+    bool    is_internal_cancelled() { return m_internal_cancelled; }
+
+    //BBS: add Plater to friend class
+    //need to call stop_internal in ui thread
+    friend class GUI::Plater;
+
 private:
 	void 	thread_proc();
 	// Calls thread_proc(), catches all C++ exceptions and shows them using wxApp::OnUnhandledException().
@@ -222,9 +237,9 @@ private:
 	// Data structure, to which the G-code export writes its annotations.
 	GCodeProcessorResult     *m_gcode_result 		 = nullptr;
 	// Callback function, used to write thumbnails into gcode.
-    ThumbnailsGeneratorCallback m_thumbnail_cb 	     = nullptr;
-    // Temporary G-code, there is one defined for the BackgroundSlicingProcess,
-    // differentiated from the other processes by a process ID.
+	ThumbnailsGeneratorCallback m_thumbnail_cb 	     = nullptr;
+	SL1Archive                  m_sla_archive;
+		// Temporary G-code, there is one defined for the BackgroundSlicingProcess, differentiated from the other processes by a process ID.
 	std::string 				m_temp_output_path;
 	// Output path provided by the user. The output path may be set even if the slicing is running,
 	// but once set, it cannot be re-set.
@@ -258,6 +273,11 @@ private:
     // thread is blocking until the UI thread calculation finishes.
     std::shared_ptr<UITask> 	m_ui_task;
 
+	//BBS: partplate related
+	GUI::PartPlate* m_current_plate;
+	PrinterTechnology m_printer_tech = ptUnknown;
+	bool m_internal_cancelled = false;
+
     PrintState<BackgroundSlicingProcessStep, bspsCount>   	m_step_state;
 	bool                set_step_started(BackgroundSlicingProcessStep step);
 	void                set_step_done(BackgroundSlicingProcessStep step);
@@ -267,6 +287,7 @@ private:
     // If the background processing stop was requested, throw CanceledException.
     void                throw_if_canceled() const { if (m_print->canceled()) throw CanceledException(); }
 	void				finalize_gcode();
+	void				export_gcode();
     void                prepare_upload();
     // To be executed at the background thread.
 	ThumbnailsList		render_thumbnails(const ThumbnailsParams &params);
@@ -281,6 +302,8 @@ private:
 	int 						m_event_finished_id  			= 0;
 	// wxWidgets command ID to be sent to the plater to inform that the G-code is being exported.
 	int                         m_event_export_began_id         = 0;
+	// wxWidgets command ID to be sent to the plater to inform that the G-code is exported end.
+	int							m_event_export_finished_id		= 0;
 
 };
 

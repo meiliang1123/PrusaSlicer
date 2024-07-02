@@ -446,7 +446,7 @@ inline void expolygons_rotate(ExPolygons &expolys, double angle)
         expoly.rotate(angle);
 }
 
-inline bool expolygons_contain(const ExPolygons &expolys, const Point &pt, bool border_result = true)
+inline bool expolygons_contain(ExPolygons &expolys, const Point &pt, bool border_result = true)
 {
     for (const ExPolygon &expoly : expolys)
         if (expoly.contains(pt, border_result))
@@ -466,6 +466,10 @@ inline ExPolygons expolygons_simplify(const ExPolygons &expolys, double toleranc
 // Do expolygons match? If they match, they must have the same topology,
 // however their contours may be rotated.
 bool expolygons_match(const ExPolygon &l, const ExPolygon &r);
+
+bool overlaps(const ExPolygons& expolys1, const ExPolygons& expolys2);
+
+Point projection_onto(const ExPolygons& expolys, const Point& pt);
 
 BoundingBox get_extents(const ExPolygon &expolygon);
 BoundingBox get_extents(const ExPolygons &expolygons);

@@ -12,23 +12,18 @@
 #include "BusyCursorJob.hpp"
 
 #include "slic3r/GUI/GUI.hpp"
-#include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
-#include "slic3r/GUI/Plater.hpp"
-#include "slic3r/GUI/GLCanvas3D.hpp"
 
 namespace Slic3r { namespace GUI {
-
-class Plater;
 
 template<class WorkerSubclass>
 class PlaterWorker: public Worker {
     WorkerSubclass m_w;
-    Plater *m_plater;
+    wxWindow *m_plater;
 
     class PlaterJob : public Job {
         std::unique_ptr<Job> m_job;
-        Plater *m_plater;
+        wxWindow *m_plater;
         long long m_process_duration; // [ms]
 
     public:
@@ -56,6 +51,17 @@ class PlaterWorker: public Worker {
                     wxWakeUpIdle();
 
                     return ftr;
+                }
+
+                void clear_percent() override {
+                    ctl.clear_percent();
+                    wxWakeUpIdle();
+                }
+
+                void show_error_info(const std::string &msg, int code, const std::string &description, const std::string &extra) override
+                {
+                    ctl.show_error_info(msg, code, description, extra);
+                    wxWakeUpIdle();
                 }
 
             } wctl{c};
@@ -91,7 +97,7 @@ class PlaterWorker: public Worker {
             }
         }
 
-        PlaterJob(Plater *p, std::unique_ptr<Job> j)
+        PlaterJob(wxWindow *p, std::unique_ptr<Job> j)
             : m_job{std::move(j)}, m_plater{p}
         {
             // TODO: decide if disabling slice button during UI job is what we
@@ -112,17 +118,20 @@ class PlaterWorker: public Worker {
         }
     };
 
+    EventGuard on_idle_evt;
+    EventGuard on_paint_evt;
+
 public:
 
     template<class... WorkerArgs>
-    PlaterWorker(Plater *plater, WorkerArgs &&...args)
-        : m_w{std::forward<WorkerArgs>(args)...}, m_plater{plater}
-    {
+    PlaterWorker(wxWindow *plater, WorkerArgs &&...args)
+        : m_w{std::forward<WorkerArgs>(args)...}
+        , m_plater{plater}
         // Ensure that messages from the worker thread to the UI thread are
         // processed continuously.
-        plater->Bind(wxEVT_IDLE, [this](wxIdleEvent &) {
-            process_events();
-        });
+        , on_idle_evt(plater, wxEVT_IDLE, [this](wxIdleEvent&) { process_events(); })
+        , on_paint_evt(plater, wxEVT_PAINT, [this](wxPaintEvent&) { process_events(); })
+    {
     }
 
     // Always package the job argument into a PlaterJob
